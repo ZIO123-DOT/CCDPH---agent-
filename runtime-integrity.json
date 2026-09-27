@@ -1,22 +1,22 @@
 {
-  "schema": 1,
-  "generatedAt": "2026-09-27T02:12:48.4901140Z",
+  "algorithm": "sha256",
+  "purpose": "corruption-detection",
   "files": [
     {
-      "path": ".gitignore",
-      "sha256": "dc1631fa56b4bcf95ee70f5bfd21a2bef4138a5f4ec975e1c469f9a07caba6ae"
+      "path": "browser/detect.mjs",
+      "sha256": "e71ad23c9796b9dbb35717c1c1652e7cb87b54e70799e40c8ab62be4d29aa97a"
     },
     {
-      "path": "browser/detect.mjs",
-      "sha256": "c667fdd214b553b4048c186db5e12eef8447d3eb8d4d28c780d95ebe50e52934"
+      "path": "browser/lifecycle.mjs",
+      "sha256": "3b2bdf2b9acd874d2b8b285cc571f88de5d60d203c9f79a0ebf6a60d4ecfc06f"
     },
     {
       "path": "browser/mcp-config.mjs",
-      "sha256": "b281f1ac11c170ed057668ea15794efb3c9bf5c05c7b5fabb9e3af43b2fb3450"
+      "sha256": "6f57ba4d30923aa6d617f3e8ab7ae9815d3d56a43779923ea27eca35659b2df0"
     },
     {
       "path": "browser/service.mjs",
-      "sha256": "08cbcca63a8078a755c065f224a2ebd252e23157ac0df7cbf2194b6ff81cd8e7"
+      "sha256": "c7e97ea277459208cb68acb4ee551887a378dab005bd4f5e3e500a5a06925d17"
     },
     {
       "path": "build/icon-512.png",
@@ -31,36 +31,60 @@
       "sha256": "9f215326aeaf66edc9b6cae5332fa7d982485a51b5889d602f7fca4575bcfd28"
     },
     {
+      "path": "credential-protector.mjs",
+      "sha256": "1032712f2b9df73f5c06099c8edca250c501165c9d482cecdd4f5a498490fcac"
+    },
+    {
       "path": "desktop.cjs",
-      "sha256": "956b6aaafba62eec79c912e3b24e2838c58163c611f9a8f7076860dc9f1bf13f"
+      "sha256": "39c0baae8671e519b060759c63e1f772234563b3231c9483e569085ecc6aa6b3"
+    },
+    {
+      "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
+      "sha256": "1e472bcfd49449e73ef76698c87f6583055aeb88dc41ca190a9c12c6791b5eea"
+    },
+    {
+      "path": "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+      "sha256": "735a0d9e498036cd006e1c63e05ce790dfbb3f32cd6e305a36a0b1375019c73a"
+    },
+    {
+      "path": "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+      "sha256": "629e2f28412e0ebef10823f589b44a9cdf6e607774dc548921ce1b1af9fad5d2"
+    },
+    {
+      "path": "node_modules/dompurify/dist/purify.es.mjs",
+      "sha256": "e7d8182ea0aae9daa46c3294a486067b3f4461bd18f8ca76e499c623e9bda6e3"
+    },
+    {
+      "path": "node_modules/marked/lib/marked.esm.js",
+      "sha256": "36d21a2561fe3bf958299f82aedf6572fcd7cebfff4a453e40e3b20aaa219a01"
     },
     {
       "path": "package-lock.json",
-      "sha256": "bec80bbbdceace69ae9cc76e231012de2d8efb2a8411f72cf09df2e8f17f5b4c"
+      "sha256": "96b6fabcdf1f7d6207845f257f583cffab5cbad85fd2d0d2993fe5e7a88e8095"
     },
     {
       "path": "package.json",
-      "sha256": "96935b81bcefd7d8897993dfb6202d033cb8d5174cfae062f5d8e2d05bc7eed2"
+      "sha256": "cb90203f4c0c25cb1f6ed5cdf2f25886c909cf3a5bf8523b91a65ae29bf6f858"
     },
     {
       "path": "preload.cjs",
-      "sha256": "5e39a41a78d24eabf5744765cff306bc51ede06821f318b6463126fe266ea5ac"
+      "sha256": "2d904d74c0aec70f57a37fa67f11709f7c23d581bf1de270e11a6d5da09bbbe6"
     },
     {
       "path": "public/api-client.js",
-      "sha256": "60cea963add906dffd18fbae0aa8f98efc48dd6d21c324d8cabfc0811c169416"
+      "sha256": "7ba32e3ecadc18be84edf709b83ad0518826fbe190bcfb51029caf3c3c776ab2"
     },
     {
       "path": "public/app.js",
-      "sha256": "624c0719d214ca06de9d9a99849840c1193e26c508f01281c75a69f544054794"
+      "sha256": "13992b9c7632db89ad66f6aaf40fd4b97f9062df28134b3b84b65263f5f5154f"
     },
     {
       "path": "public/index.html",
-      "sha256": "f3c3af1f28c5fd9beb676d10ba010ee8bade4584e30be4b665376677adf03e3e"
+      "sha256": "56719a6ce39fb2d9eb9db31c60e4877c61a0f84ebb77d44b0807d7df29449b4c"
     },
     {
       "path": "public/markdown-renderer.js",
-      "sha256": "bced62eb425cd9cce70d2fc52e59cbfa05332036e803597e6e51d88b866df0fe"
+      "sha256": "4e69ae7a2cdd5b817ce53feb8fd5211a6a7e596fde06973016bf573a6b4e8f31"
     },
     {
       "path": "public/style.css",
@@ -100,15 +124,19 @@
     },
     {
       "path": "routes/integration.mjs",
-      "sha256": "4dcb64a93fdcdfec24aa136740588b4f5e424878b52cf5b0fb3a5745e09931b4"
+      "sha256": "fc71f11d9054d56b4232e5cdb972cebf0e23163f76b3e99fa3bba306eeb91e23"
     },
     {
       "path": "routes/workspace-io.mjs",
-      "sha256": "52350296805caeacfd883a7679440e706f363b1933b2b339cc6a885009ee2363"
+      "sha256": "6cad1b46c1e8f99dbc911bfa4dd509f4dcfe5f3ab660e3dab9d4cfa4d607e27b"
     },
     {
       "path": "routes/workspace-mutation.mjs",
-      "sha256": "a9439949558f519182f2592d4d289fafb0352f34176670c07ae5b3969c9e2abd"
+      "sha256": "15ccad337e985ebd420aca155a13e84787d0c3dd0566f3a324406381dbd7e21b"
+    },
+    {
+      "path": "scripts/generate-runtime-integrity.mjs",
+      "sha256": "f3736cfd31808841e5bebfa885cbc6b62165f52f74984b76a313e5297c9d3972"
     },
     {
       "path": "server-policies.mjs",
@@ -116,7 +144,7 @@
     },
     {
       "path": "server.mjs",
-      "sha256": "91b24d9937f015feee0959e82e7153ce235c9fcad80b692cbab7a1acca70b90c"
+      "sha256": "baaf9bb7c276612ce87ff1f1ba53e899897736a40e75e7811f1407eb2006ccc9"
     },
     {
       "path": "state-load-worker.mjs",
@@ -124,11 +152,11 @@
     },
     {
       "path": "state-safety.mjs",
-      "sha256": "6b9da0698d38270d2944853bdb57d829ae8ff47abf752ace1f595c1514989f58"
+      "sha256": "512e866a51397b1860cc6cd186a14173c3d3783cd2eeb86af61e01efb25f13fb"
     },
     {
       "path": "terminal-registry.mjs",
-      "sha256": "e1f05cece069a6087561470f59016523624934faacfc0eb8914533dd20e25ce4"
+      "sha256": "9a1ac994c10d35e5ec56c3ecff6b657aa423746c033bcf2a39cfe45bfc389779"
     }
   ]
 }

@@ -41,6 +41,10 @@ return async function routeWorkspaceIoDomain(req, res, url, pathname) {
     );
     const relative = url.searchParams.get("path") || "";
     const folder = await safePath(root, relative);
+    // CCDPH-FIX(P3-11): safePath 返回的是 **realpath 之后** 的路径，而 root 是词法路径。
+    // 当 root 本身含 junction/symlink 时，二者不同源 → path.relative 会算出带 ".." 的
+    // 诡异相对路径（前端列表显示异常）。这里统一以 realpath(root) 为基准。
+    const realRoot = await fs.realpath(root).catch(() => root);
     const entries = [];
     let truncated = false;
     let directory;
@@ -56,7 +60,7 @@ return async function routeWorkspaceIoDomain(req, res, url, pathname) {
           name: entry.name,
           directory: entry.isDirectory(),
           path: path
-            .relative(root, path.join(folder, entry.name))
+            .relative(realRoot, path.join(folder, entry.name))
             .replaceAll("\\", "/"),
         });
       }
@@ -229,6 +233,8 @@ return async function routeWorkspaceIoDomain(req, res, url, pathname) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
     });
     writeSseInitialFrame(
       terminal.clients,
@@ -236,7 +242,15 @@ return async function routeWorkspaceIoDomain(req, res, url, pathname) {
       `data: ${JSON.stringify({ type: "snapshot", text: boundedText(terminal), exited: terminal.exited })}\n\n`,
       !terminal.exited,
     );
-    if (terminal.exited) return;
+    if (terminal.exited) {
+      // CCDPH-FIX(P3-12): 早退前把自己从 clients 摘掉并注册 close/error 清理，
+      // 否则这条连接与监听器只能等 releaseTimer 兜底。
+      terminal.clients?.delete?.(res);
+      const dropClient = () => terminal.clients?.delete?.(res);
+      res.on("close", dropClient);
+      res.on("error", dropClient);
+      return;
+    }
     const timer = setInterval(() => {
       terminal.lastUsedAt = Date.now();
       writeSseClients(terminal.clients, ": heartbeat\n\n");

@@ -20,9 +20,9 @@ export function createWorkspaceMutationRoute(deps) {
     json,
     listWorktrees,
     matchWorktree,
-    pathExists,
     redetectClaude,
     removeWorktreeOf,
+    resolveAuthorizedWorktreeTarget,
     repoRootFor,
     requireObject,
     sanitizeError,
@@ -32,6 +32,23 @@ export function createWorkspaceMutationRoute(deps) {
     workspaceRoot,
     worktreeBaseDir,
   } = deps;
+
+  async function cleanupReservedWorktreeTarget(target, baseDir, reason) {
+    const targetStat = await fs.lstat(target).catch(() => null);
+    if (!targetStat?.isDirectory() || targetStat.isSymbolicLink()) return false;
+    const authorized = await resolveAuthorizedWorktreeTarget(target, baseDir);
+    if (!authorized) return false;
+    try {
+      await fs.rm(authorized.target, { recursive: true, force: true });
+      return true;
+    } catch (error) {
+      console.warn(
+        `[ccdph] ${reason}后的 Worktree 目录清理失败:`,
+        error?.message || error,
+      );
+      return false;
+    }
+  }
 
 return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
   const db = getDb();
@@ -72,7 +89,9 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
     try {
       worktrees = await listWorktrees(root);
     } catch (e) {
-      error = e.message;
+      // CCDPH-FIX(P2-10): 原来把 git 原始报错（常含绝对路径，如 dubious ownership 文案）
+      // 直接塞进 200 body，绕过全仓统一的脱敏出口。改用 sanitizeError。
+      error = sanitizeError(e);
     }
     return json(res, {
       git: true,
@@ -108,10 +127,26 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
     const baseDir = worktreeBaseDir(root);
     await fs.mkdir(baseDir, { recursive: true });
     const slug =
-      branch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "") ||
-      "worktree";
-    const target = path.join(baseDir, slug);
-    if (await pathExists(target)) throw new Error(`目标目录已存在：${target}`);
+      branch
+        .replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/^[-.]+|[-.]+$/g, "")
+        .slice(0, 80)
+        .replace(/[.-]+$/g, "") || "worktree";
+    const target = path.join(baseDir, `${slug}-${randomUUID().slice(0, 8)}`);
+    try {
+      await fs.mkdir(target);
+    } catch (error) {
+      // CCDPH-FIX(P3-25): 不再把绝对路径回显给客户端（目标目录在应用数据目录下，
+      // 属内部信息）。前端只需要知道"这个名字被占了"。
+      if (error?.code === "EEXIST")
+        throw new Error("目标目录已存在，已拒绝覆盖（请稍后重试）");
+      throw error;
+    }
+    const reservedTarget = await resolveAuthorizedWorktreeTarget(target, baseDir);
+    if (!reservedTarget) {
+      await cleanupReservedWorktreeTarget(target, baseDir, "创建前校验失败");
+      throw new Error("Worktree 目标目录在创建前被替换或越过受控目录，已拒绝操作");
+    }
     let branchExists = false;
     try {
       await git(root, [
@@ -122,11 +157,25 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
       ]);
       branchExists = true;
     } catch { }
-    if (branchExists) await git(root, ["worktree", "add", target, branch]);
-    else await git(root, ["worktree", "add", "-b", branch, target, base || "HEAD"]);
+    try {
+      if (branchExists) await git(root, ["worktree", "add", target, branch]);
+      else await git(root, ["worktree", "add", "-b", branch, target, base || "HEAD"]);
+    } catch (error) {
+      await cleanupReservedWorktreeTarget(target, baseDir, "Git 创建失败");
+      throw error;
+    }
+    const authorizedTarget = await resolveAuthorizedWorktreeTarget(target, baseDir);
+    if (!authorizedTarget) {
+      console.warn(
+        `[ccdph] Worktree 创建后目标路径越界，未自动删除可疑路径: ${target}`,
+      );
+      throw new Error(
+        "Worktree 创建后目标路径发生替换或越界；已停止返回该路径，请检查 Git worktree 列表并人工清理",
+      );
+    }
     return json(res, {
       ok: true,
-      path: target,
+      path: authorizedTarget.target,
       branch,
       created: !branchExists,
     });
@@ -360,16 +409,31 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
     await body(req);
     return await sessionWriteQueue(async () => {
       const before = db.sessions.length;
+      const previousSessions = db.sessions;
       const dropped = db.sessions.filter((item) => item.archived && !item.running);
       db.sessions = db.sessions.filter((item) => !item.archived || item.running);
       markGlobalHistoryBytesDirty();
+      // CCDPH-FIX(P3-20): 先落盘（失败可回滚内存），成功后再逐个删 worktree 目录。
+      // 原顺序相反：先删目录（不可逆）再 save，save 失败时接口报 400 但记录与目录都已没了。
+      try {
+        await save();
+      } catch (error) {
+        db.sessions = previousSessions;
+        markGlobalHistoryBytesDirty();
+        throw error;
+      }
       const worktree = { removed: 0, kept: 0 };
       for (const item of dropped) {
-        const result = await removeWorktreeOf(item);
+        const result = await removeWorktreeOf(item).catch((error) => {
+          console.error(
+            "[ccdph] 清空归档后清理 worktree 失败（目录可能残留）:",
+            error?.message || error,
+          );
+          return { removed: 0, kept: 1 };
+        });
         worktree.removed += result.removed;
         worktree.kept += result.kept;
       }
-      await save();
       return json(res, {
         removed: before - db.sessions.length,
         worktree,
@@ -440,6 +504,9 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
     updateRuntime.job.startedAt = Date.now();
     updateRuntime.job.finishedAt = 0;
     updateRuntime.job.error = "";
+    // CCDPH-FIX(P3-22): job 对象里带上 jobId，前端轮询 /api/update/status 时才能把
+    // 当前状态归属到这次安装任务（此前只把 jobId 回给调用方，job 里没有）。
+    updateRuntime.job.id = jobId;
     void (async () => {
       try {
         const result = await installUpdate((stage) => {
@@ -457,7 +524,7 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
           if (updateRuntime.job.stage === "完成")
             updateRuntime.job.stage = "等待重启超时，可重新安装";
           console.warn("[ccdph] 更新程序未在预期时间内接管，已重新开放安装入口");
-        }, UPDATE_INSTALL_GATE_TIMEOUT_MS);
+        });
       } catch (error) {
         // 失败必须如实落进 job 状态（前端轮询可见），并放开闸门允许重试。
         updateRuntime.installRunning = false;

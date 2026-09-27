@@ -194,7 +194,15 @@
               </button>
             </div>
           </section>
-          <div class="messages" id="messages"></div>
+          <!-- CCDPH-FIX(P2-16): 会话消息是动态插入的，此前没有实时区域 → 读屏软件不会朗读任何
+               新消息/流式回复。role="log" + aria-live="polite" 让追加内容被播报（不打断当前朗读）。 -->
+          <div
+            class="messages"
+            id="messages"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions text"
+          ></div>
         </div>
 
         <div class="composer-wrap">

@@ -4,9 +4,95 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+const WINDOWS_SYSTEM32 = path.join(
+  process.env.SystemRoot || "C:\\Windows",
+  "System32",
+);
+const WINDOWS_TASKKILL_EXE = path.join(WINDOWS_SYSTEM32, "taskkill.exe");
+const WINDOWS_POWERSHELL_EXE = path.join(
+  WINDOWS_SYSTEM32,
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
 const HELPER_STDOUT_MAX_CHARS = 2 * 1024 * 1024;
 const HELPER_STDERR_MAX_CHARS = 4000;
 const HELPER_RESPONSE_TIMEOUT_MS = 10_000;
+
+export function mergePendingTerminalRecords(pending, current) {
+  const recordKey = (record) => {
+    const pid = Number(record?.pid);
+    if (!Number.isInteger(pid) || pid <= 0) return "";
+    return `${pid}|${String(record?.name || "").toLowerCase()}|${String(record?.started || "")}`;
+  };
+  const merged = new Map();
+  for (const record of Array.isArray(pending) ? pending : []) {
+    const key = recordKey(record);
+    if (key) merged.set(key, record);
+  }
+  for (const record of Array.isArray(current) ? current : []) {
+    const key = recordKey(record);
+    if (key) merged.set(key, record);
+  }
+  return [...merged.values()];
+}
+
+export async function readTerminalRegistryDocument(
+  file,
+  {
+    readFile = (target) => fs.readFile(target, "utf8"),
+    removeFile = (target) => fs.rm(target, { force: true }),
+    logger = console,
+    onReadError = () => {},
+  } = {},
+) {
+  let raw;
+  try {
+    raw = await readFile(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    logger.warn(
+      "[ccdph] 读取终端进程注册表失败，已保留原文件以便下次重试:",
+      error?.message || error,
+    );
+    onReadError(error);
+    return null;
+  }
+  try {
+    const doc = JSON.parse(raw);
+    if (!doc || typeof doc !== "object" || Array.isArray(doc))
+      throw new Error("注册表根节点不是对象");
+    return doc;
+  } catch (error) {
+    await removeFile(file).catch((removeError) =>
+      logger.warn(
+        "[ccdph] 删除损坏的终端进程注册表失败:",
+        removeError?.message || removeError,
+      ),
+    );
+    return null;
+  }
+}
+
+export async function recoverUnreadableTerminalRecords(
+  file,
+  pending,
+  { readDocument = readTerminalRegistryDocument, logger = console } = {},
+) {
+  let unreadable = false;
+  const doc = await readDocument(file, {
+    logger,
+    onReadError: () => {
+      unreadable = true;
+    },
+  });
+  return {
+    unreadable,
+    records: doc
+      ? mergePendingTerminalRecords(pending, doc.records)
+      : mergePendingTerminalRecords(pending, []),
+  };
+}
 
 export function terminalRegistryPlatformStatus(platform = process.platform) {
   return platform === "win32"
@@ -90,8 +176,10 @@ public static class CcdphProcessSnapshot {
 '@
 
 while (($request = [Console]::In.ReadLine()) -ne $null) {
+  $requestId = ''
   try {
     $requestDoc = $request | ConvertFrom-Json
+    $requestId = [string]$requestDoc.id
     $all = @([CcdphProcessSnapshot]::Get())
     $byPid = @{}
     $byParent = @{}
@@ -134,9 +222,9 @@ while (($request = [Console]::In.ReadLine()) -ne $null) {
         Started = $started
       }
     }
-    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @($rows)))
+    [Console]::Out.WriteLine((ConvertTo-Json -Compress -Depth 4 -InputObject @{ id = $requestId; rows = @($rows) }))
   } catch {
-    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{ error = $_.Exception.Message }))
+    [Console]::Out.WriteLine((ConvertTo-Json -Compress -InputObject @{ id = $requestId; error = $_.Exception.Message }))
   }
   [Console]::Out.Flush()
 }
@@ -156,17 +244,37 @@ export function createTerminalProcessRegistry({
   let processHelper = null;
   let helperOutput = "";
   let helperError = "";
-  const helperRequests = [];
+  const helperRequests = new Map();
+  let helperRequestSequence = 0;
+  let pendingStaleRecords = [];
+  let registryUnreadable = false;
+
+  const mergeRecords = (current) => {
+    return mergePendingTerminalRecords(pendingStaleRecords, current);
+  };
 
   const uniqueTmpPath = () =>
     `${file}.terminal-pids-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`;
 
+  async function cleanupSnapshotTemps() {
+    const folder = path.dirname(file);
+    const prefix = `${path.basename(file)}.terminal-pids-`;
+    const entries = await fs.readdir(folder, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.startsWith(prefix) || !entry.name.endsWith(".tmp"))
+        continue;
+      await fs.rm(path.join(folder, entry.name), { force: true }).catch((error) =>
+        logger.warn("[ccdph] 清理终端注册表临时文件失败:", error?.message || error),
+      );
+    }
+  }
+
   function rejectHelperRequests(error) {
-    while (helperRequests.length) {
-      const request = helperRequests.shift();
+    for (const request of helperRequests.values()) {
       clearTimeout(request.timer);
       request.reject(error);
     }
+    helperRequests.clear();
   }
 
   function stopProcessHelper() {
@@ -190,7 +298,7 @@ export function createTerminalProcessRegistry({
     helperOutput = "";
     helperError = "";
     const helper = spawn(
-      "powershell.exe",
+      WINDOWS_POWERSHELL_EXE,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", PROCESS_HELPER_SCRIPT],
       { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -210,13 +318,22 @@ export function createTerminalProcessRegistry({
         const line = helperOutput.slice(0, newline).trim();
         helperOutput = helperOutput.slice(newline + 1);
         if (!line) continue;
-        const request = helperRequests.shift();
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch (error) {
+          logger.warn("[ccdph] 进程快照助手返回了无法解析的响应，已重启助手");
+          stopProcessHelper();
+          return;
+        }
+        const requestId = String(parsed?.id || "");
+        const request = helperRequests.get(requestId);
         if (!request) continue;
+        helperRequests.delete(requestId);
         clearTimeout(request.timer);
         try {
-          const parsed = JSON.parse(line);
           if (parsed?.error) throw new Error(String(parsed.error));
-          request.resolve(Array.isArray(parsed) ? parsed : parsed ? [parsed] : []);
+          request.resolve(Array.isArray(parsed?.rows) ? parsed.rows : []);
         } catch (error) {
           request.reject(error);
         }
@@ -245,26 +362,26 @@ export function createTerminalProcessRegistry({
     if (process.platform !== "win32") return [];
     const helper = ensureProcessHelper();
     return await new Promise((resolve, reject) => {
-      const request = { resolve, reject, timer: null };
+      const requestId = `${process.pid}-${++helperRequestSequence}-${Date.now()}`;
+      const request = { id: requestId, resolve, reject, timer: null };
       request.timer = setTimeout(() => {
-        const index = helperRequests.indexOf(request);
-        if (index >= 0) helperRequests.splice(index, 1);
+        helperRequests.delete(requestId);
         reject(new Error("进程快照助手响应超时"));
         stopProcessHelper();
       }, HELPER_RESPONSE_TIMEOUT_MS);
       request.timer.unref?.();
-      helperRequests.push(request);
+      helperRequests.set(requestId, request);
       try {
         helper.stdin.write(
           `${JSON.stringify({
+            id: requestId,
             roots: rootPids
               .map(Number)
               .filter((pid) => Number.isInteger(pid) && pid > 0),
           })}\n`,
         );
       } catch (error) {
-        const index = helperRequests.indexOf(request);
-        if (index >= 0) helperRequests.splice(index, 1);
+        helperRequests.delete(requestId);
         clearTimeout(request.timer);
         reject(error);
       }
@@ -273,11 +390,42 @@ export function createTerminalProcessRegistry({
 
   async function writeSnapshot() {
     if (process.platform !== "win32") return;
+    if (registryUnreadable) {
+      const recovered = await recoverUnreadableTerminalRecords(
+        file,
+        pendingStaleRecords,
+        { logger },
+      );
+      if (recovered.unreadable) {
+        logger.warn(
+          "[ccdph] 终端进程注册表仍不可读，已跳过本次快照覆写以保留恢复记录",
+        );
+        return;
+      }
+      registryUnreadable = false;
+      pendingStaleRecords = recovered.records;
+    }
     const rootPids = getRootPids()
       .map(Number)
       .filter((pid) => Number.isInteger(pid) && pid > 0);
+    const retainedRecords = mergeRecords([]);
     if (!rootPids.length) {
-      await fs.rm(file, { force: true }).catch(() => { });
+      if (retainedRecords.length) {
+        const tmp = uniqueTmpPath();
+        try {
+          await fs.writeFile(
+            tmp,
+            JSON.stringify({ owner: null, records: retainedRecords }),
+            "utf8",
+          );
+          await fs.rename(tmp, file);
+        } catch (error) {
+          await fs.rm(tmp, { force: true }).catch(() => {});
+          throw error;
+        }
+      } else {
+        await fs.rm(file, { force: true }).catch(() => { });
+      }
       stopProcessHelper();
       return;
     }
@@ -306,6 +454,7 @@ export function createTerminalProcessRegistry({
       for (const child of byParent.get(pid) || [])
         queue.push(Number(child.ProcessId));
     }
+    const recordsToWrite = mergeRecords(records);
     const ownerItem = byPid.get(process.pid);
     const tmp = uniqueTmpPath();
     try {
@@ -319,7 +468,7 @@ export function createTerminalProcessRegistry({
                 started: String(ownerItem.Started || ""),
               }
             : null,
-          records,
+          records: recordsToWrite,
         }),
         "utf8",
       );
@@ -358,13 +507,15 @@ export function createTerminalProcessRegistry({
 
   async function sweep() {
     if (process.platform !== "win32") return 0;
-    let doc;
-    try {
-      doc = JSON.parse(await fs.readFile(file, "utf8"));
-    } catch {
-      await fs.rm(file, { force: true }).catch(() => { });
-      return 0;
-    }
+    await cleanupSnapshotTemps();
+    registryUnreadable = false;
+    const doc = await readTerminalRegistryDocument(file, {
+      logger,
+      onReadError: () => {
+        registryUnreadable = true;
+      },
+    });
+    if (!doc) return 0;
     // Enumeration failure is not proof that the recorded processes exited.
     // Preserve the registry so a later startup can retry instead of silently
     // losing the only recovery record.
@@ -393,22 +544,55 @@ export function createTerminalProcessRegistry({
       return 0;
     }
     let removed = 0;
-    for (const record of records) {
-      const pid = Number(record?.pid);
-      const current = live.get(pid);
-      if (
-        !current ||
-        String(current.Name || "").toLowerCase() !==
-          String(record.name || "").toLowerCase() ||
-        String(current.Started || "") !== String(record.started || "")
-      )
-        continue;
-      await exec("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        windowsHide: true,
-        timeout: killTimeout,
-      }).catch(() => { });
-      removed += 1;
+    const killFailures = [];
+    try {
+      for (const record of records) {
+        const pid = Number(record?.pid);
+        const current = live.get(pid);
+        if (
+          !current ||
+          String(current.Name || "").toLowerCase() !==
+            String(record.name || "").toLowerCase() ||
+          String(current.Started || "") !== String(record.started || "")
+        )
+          continue;
+        // PID 可能在首次快照与 taskkill 之间退出并被复用。每次 kill 前重新核验
+        // 名称与启动时间，避免 /T 连坐结束复用该 PID 的无关进程树。
+        const immediateTable = await windowsProcessTable([pid]);
+        const immediate = immediateTable.find(
+          (item) => Number(item.ProcessId) === pid,
+        );
+        if (
+          !immediate ||
+          String(immediate.Name || "").toLowerCase() !==
+            String(record.name || "").toLowerCase() ||
+          String(immediate.Started || "") !== String(record.started || "")
+        )
+          continue;
+        try {
+          await exec(WINDOWS_TASKKILL_EXE, ["/PID", String(pid), "/T", "/F"], {
+            windowsHide: true,
+            timeout: killTimeout,
+          });
+          removed += 1;
+        } catch (error) {
+          killFailures.push({ pid, error });
+          logger.warn(
+            `[ccdph] 清理残留终端进程 ${pid} 失败，注册表已保留以便下次重试:`,
+            error?.message || error,
+          );
+        }
+      }
+    } finally {
+      stopProcessHelper();
     }
+    if (killFailures.length) {
+      pendingStaleRecords = records.filter((record) =>
+        killFailures.some((failure) => failure.pid === Number(record.pid)),
+      );
+      throw new Error(`仍有 ${killFailures.length} 个残留终端进程未能确认清理`);
+    }
+    pendingStaleRecords = [];
     await fs.rm(file, { force: true }).catch(() => { });
     if (removed)
       logger.warn(`[ccdph] 已清理上次异常退出残留的 ${removed} 个终端进程`);

@@ -6,7 +6,7 @@
 
 ## 打开
 
-双击 **release/CCDPH-win32-x64/CCDPH.exe**。这是第二版标准 Electron 便携窗口，无需 PowerShell、VBS 或终端启动器。整个 `CCDPH-win32-x64` 文件夹需要保留在一起。
+双击桌面的 **CCDPH** 快捷方式，或直接运行 `D:\CCDPH\CCDPH.exe`。这是标准 Electron 便携窗口，无需 PowerShell、VBS 或终端启动器。整个 `D:\CCDPH` 文件夹需要保留在一起。
 
 当前发布目标仅支持 Windows x64。源码可在其他平台启动部分网页功能，但终端异常退出恢复依赖
 Windows Toolhelp32 与 `taskkill`；非 Windows 平台会明确记录降级提示，不承诺残留进程自动清理。
@@ -29,14 +29,14 @@ Windows Toolhelp32 与 `taskkill`；非 Windows 平台会明确记录降级提�
 - CC Switch 继续负责管理服务商。先在 CC Switch 选择 Claude Code 服务商，再在工作台发送消息。每轮请求启动 Claude Code 读取配置；切换服务商后建议新建会话，避免不同模型的历史兼容问题。使用 CC Switch 本地代理时请保持其运行。
 - 也可在「设置 → API 接入」中选择“供应商配置”，直接填写 Anthropic 兼容的 Base URL、模型映射与密钥。DeepSeek、Kimi、GLM、OpenRouter 等第三方模型均通过 Claude Code 的兼容 API 路径调用。
 - 工作台会在 Node 服务端只读检查 CC Switch 当前 Claude Provider，并对受支持的官方余额接口查询余额。DeepSeek、StepFun、SiliconFlow、OpenRouter 和 Novita 已有适配；密钥本体不会返回给页面，也不写入日志；仅回传末 4 位用于确认填的是哪把 key。余额每 60 秒刷新，也可点击左下角额度手动刷新。
-- 工作台把 API 密钥存在数据目录的 `api-auth.json`（本机明文，不进 `db.settings`、不回传页面；CC Switch 自己的数据库不被动过）。Hooks 面板会写入 Claude Code 的 `CLAUDE_CONFIG_DIR/settings.json`，MCP 面板会写入 `~/.claude.json`，均为"先备份、写临时文件校验可解析、再原子替换"。第三方中转服务的兼容性由其接口实现决定。
+- Windows 上，工作台使用当前 Windows 用户的 DPAPI 加密供应商密钥，并把密文存入数据目录的 `api-auth.json`；密钥不进 `db.settings`、不回传页面，也不写日志。系统安全存储不可用的平台会降级为“仅本次运行”：密钥只驻留内存，退出后需要重新输入，磁盘不会写入明文。旧版明文文件升级失败时主界面仍可启动，并会尽力清除磁盘明文后进入仅本次运行模式。CC Switch 自己的数据库不会被修改。Hooks 面板会写入 Claude Code 的 `CLAUDE_CONFIG_DIR/settings.json`，MCP 面板会写入 `~/.claude.json`，均为“先备份、写临时文件校验可解析、再原子替换”。第三方中转服务的兼容性由其接口实现决定。
 - 默认模型跟随现有配置，也可以在输入框底部选择模型。账号能否使用某个模型由现有服务配置决定。
 - 独立 DeepSeek Harness 引擎及其切换界面已移除；应用始终使用 Claude Code。旧会话会在启动时自动按 Claude Code 会话加载。
 - 单轮任务默认最长运行 2 小时；如需调整，可设置环境变量
   `WORKBENCH_RUN_HARD_DEADLINE_MS`（毫秒，最小 1000）。到达上限会强制结束卡住的任务，
   防止会话和连接永久占用。
 - 桌面版会话保存在 exe 旁的 `.data/`，窗口设置在 `.desktop-data/`；开发版位于源代码目录。实际模型请求仍由 Claude Code 发往你配置的服务。
-- 只监听 `127.0.0.1:4318`，接口校验本次启动令牌和来源；不要公开转发该端口或分享 `.data/runtime.json`。
+- 只监听 `127.0.0.1:4318`。启动令牌仅用于首次换取 `HttpOnly + SameSite=Strict` 会话 Cookie，换取成功后渲染层会立即清空内存中的令牌；所有接口仍校验 Host、Origin、会话 Cookie 和分桶限流。不要公开转发该端口。
 - 这是便携 Electron 桌面程序，没有系统安装器或自动更新器。渲染页面禁用 Node 集成，启用上下文隔离和 Chromium 沙箱。
 - 文件面板是只读预览。修改由 Claude Code 工具执行；Git 面板显示整个项目现有修改，不能将所有修改归因于当前会话。
 - 新工作台会话会保存并续接 Claude 会话 ID；暂不自动导入此前终端里的历史会话。
@@ -72,7 +72,7 @@ Windows Toolhelp32 与 `taskkill`；非 Windows 平台会明确记录降级提�
 
 ## 排查启动问题
 
-桌面启动错误会以原生对话框显示。旧 PowerShell/VBS 启动器曾触发杀毒软件启发式检测，已移除；无需恢复文件、添加白名单或关闭防护。
+桌面启动错误会以原生对话框显示。运行时 SHA-256 清单不一致仍会阻止启动；Claude Code 的 Authenticode 签名因离线证书链、PowerShell 策略或安全软件而暂时无法验证时，CCDPH 会写入 `.data/startup-warnings.log`、显示告警并降级继续启动，不会把应用“锁死”。旧 PowerShell/VBS 启动器曾触发杀毒软件启发式检测，已移除；无需恢复文件、添加白名单或关闭防护。
 
 依赖已安装。迁移机器后需要 Node.js 20+ 和已配置好的 Claude Code，然后运行：
 
@@ -90,13 +90,16 @@ npm install --cache .npm-cache --registry https://registry.npmjs.org --omit=opti
 
 ## 从源码运行与测试
 
-前置条件：Node.js 20+，依赖已安装（见上节 `npm install` 命令）。仓库提供三个脚本（见 `package.json` 的 `scripts`）：
+前置条件：Node.js 20+，依赖已安装（见上节 `npm install` 命令）。仓库提供四个脚本（见 `package.json` 的 `scripts`）：
 
 - `npm start`：即 `node server.mjs`，启动浏览器开发服务（默认 `127.0.0.1:4318`，可用 `WORKBENCH_PORT` 换端口）。本次启动的入口 URL 与令牌只打印在该进程终端，不写入磁盘。
 - `npm test`：即 `node tests/run.mjs`，运行离线测试：启动冒烟（鉴权与 `runtime.json` 不含令牌）、`state.json` 损坏兜底、NTFS ADS 拦截、更新任务后台化回归。全程使用临时数据目录与随机端口，不触碰部署目录的 `.data`。
 - `npm run check`：即 `node tests/syntax-check.mjs`，对全部源码文件（`server.mjs`、`desktop.cjs`、`preload.cjs`、`browser/*.mjs`、`public/app.js`、`tests/*.mjs`）逐个做 `node --check` 语法检查。
+- `npm run integrity`：重新生成 `runtime-integrity.json`。只应在代码冻结后运行，并在同步到运行版后复算全部条目。
 
-仓库没有桌面打包脚本：桌面入口是 `desktop.cjs`（需自行以 Electron 运行），`release/CCDPH-win32-x64/` 便携 exe 由仓库外的打包器生成，不存在 `npm run desktop` 或 `npm run build:desktop` 命令。依赖版本由 `package-lock.json` 锁定。
+仓库没有桌面打包脚本：桌面入口是 `desktop.cjs`（需自行以 Electron 运行），当前桌面运行版位于 `D:\CCDPH`，应用代码为 `D:\CCDPH\resources\app`。便携 exe 由仓库外的打包器生成，不存在 `npm run desktop` 或 `npm run build:desktop` 命令。依赖版本由 `package-lock.json` 锁定。
+
+> **随附的运行时**：当前运行版内含 **Electron 44.3.0**（见 `D:\CCDPH\version`）。Electron 不在 `package.json` 的 `dependencies` 里，**`npm audit` 不会覆盖它及其内置 Chromium / Node / V8 的 CVE**；每次发版应记录所用 Electron 版本，并单独跟进其安全公告。
 
 ## 开发
 

@@ -1,5 +1,31 @@
 # CCDPH 审计修复索引
 
+## 2026-09-27 · v0.3.2 启动可用性与鉴权收口
+
+- Claude Code Authenticode 验证失败改为可见告警并继续启动；SHA-256 清单不一致仍是硬门禁。
+- 启动令牌仅用于换取 HttpOnly 会话 Cookie，成功后从渲染进程内存清除；Cookie 覆盖普通 API、SSE 与卸载清理。
+- Windows 供应商密钥使用 DPAPI；无安全存储时降级为仅本次运行，绝不写入磁盘明文。
+- 旧明文密钥迁移失败不再阻断主界面；无法安全移除旧文件时清空内存密钥并锁定原文件。
+- `launchDedicatedEdge` 在服务层直接校验端口/profile，不再把参数一致性只寄托于上层协调器。
+- 全局历史排序缓存增加 revision 与 preferred-session 失效条件；终端 SSE 统一复用 `SSE_FRAME_CHARS`。
+- 设计决策见 `docs/adr/0001-local-auth-and-secret-storage.md`，版本变更见根目录 `CHANGELOG.md`。
+- 独立重审补充：Markdown 净化启用 `SANITIZE_NAMED_PROPS`，模型 HTML 的 `id/name` 统一加前缀，防止 DOM Clobbering。
+- API 客户端对 401 统一尝试一次重新鉴权；无法恢复时明确提示重启应用。
+- 新建会话在 `refreshState()` 后二次校验导航 revision；SSE 重连保留 `nativeApprovalIds`。
+- `refreshState()` 增加最新请求序号守卫；bfcache 隐藏恢复先重挂生命周期监听，重新可见时再恢复 SSE 与状态刷新。
+- 更新成功路径改由 `armUpdateInstallGateTimer` 自身默认超时控制，防止成功误报失败并提前松开 MED-15 闸门。
+- CDP 连接用 keyed Promise 折叠并发；Hooks update 数组分支复用 MED-16 脱敏命令还原。
+- Worktree 创建使用随机直系子目录原子预留，并在 `git worktree add` 后再次检查 realpath 包含性。
+- 残留浏览器标记不可核验时的错误会给出标记绝对路径、PID 与“先结束进程再删标记”的恢复步骤。
+- Windows PowerShell、where、cmd 及更新批处理外部工具固定使用 System32 路径，避免 cwd/PATH 同名文件劫持。
+- Hooks update 的单命令与数组分支共用 MED-16 脱敏还原；Worktree 失败清理仅递归删除经 realpath 验证的普通受控目录。
+- 终端进程助手使用请求 ID 对应响应；每次 taskkill 前重新核验 PID、进程名与启动时间，清理失败时保留注册表供下次重试。
+- W-1：失败的终端清理记录进入 `pendingStaleRecords`，后续新终端快照或无终端快照都会合并保留，不再被覆盖或删除。
+- W-1 回归测试同时覆盖活动快照与空闲快照；失败记录只在对应进程成功清理或身份确认失效后移除。
+- W-1 housekeeping：启动 sweep 会清理历史 `terminal-processes.json.terminal-pids-*.tmp` 临时文件；合并 pending 记录时跳过无法解析为正整数的 PID。
+- W-2：终端注册表 ENOENT 视为无记录，EBUSY/EPERM/EACCES 等读取失败保留原文件并告警；仅成功读取后 JSON 解析失败才删除损坏文件。
+- W-3：读取失败会设置 `registryUnreadable`；后续快照覆写前必须重新读取并合并旧记录，持续不可读时跳过写入，避免同会话终端活动抹掉恢复档。
+
 源码中的 `CCDPH-FIX(...)` 标记用于说明某段防御逻辑的来源。编号来自不同审计轮次，
 不是按单一序列生成；修改带标记的代码时，应同时更新对应回归测试。
 

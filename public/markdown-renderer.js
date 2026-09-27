@@ -71,7 +71,9 @@ const tooManyDelimiters = (text, limit) => {
   }
   return false;
 };
-const MARKDOWN_FALLBACK_LIMIT = 100000;
+// CCDPH-FIX(P1-1): app.js 的降级分支要用它裁剪，必须导出（此前只在本模块内使用，
+// 导致 app.js 里 `clip(state.liveText, MARKDOWN_FALLBACK_LIMIT)` 抛 ReferenceError）。
+export const MARKDOWN_FALLBACK_LIMIT = 100000;
 // CCDPH-FIX(AUDIT-13): 回退预览的定长截断同样不能切在代理对中间
 const markdownFallback = (key) =>
   `<pre class="markdown-fallback">${escapeHtml(clip(key, MARKDOWN_FALLBACK_LIMIT))}</pre>`;
@@ -130,7 +132,29 @@ export const markdown = (text, cache = true) => {
     html = DOMPurify.sanitize(marked.parse(key), {
       FORBID_TAGS: ["img", "style", "input", "form"],
       FORBID_ATTR: ["style"],
+      // 模型输出里的 id/name 不能与应用控件同名，否则会让 document.querySelector
+      // 命中消息区中的注入节点。保留锚点语义，但统一加 user-content- 前缀。
+      SANITIZE_NAMED_PROPS: true,
     });
+    // CCDPH-FIX(P3-15/P3-15b): class 未被净化 —— 模型可给元素套上应用自身的类名做界面欺骗。
+    // 只保留代码高亮所需的 `language-*`。
+    // ⚠️ 必须用 **DOM 级** 处理：早先我用字符串正则 `/\sclass="([^"]*)"/g`，而 DOMPurify 的
+    // 序列化**不会转义文本节点里的 `"`** —— 于是正文/`<pre><code>` 里字面出现的
+    // ` class="x"`（例如讲解 HTML 的消息）会被连字删掉，**静默篡改消息内容**。
+    // 这里改为解析成 DOM、只改真实属性节点；任何失败都保持原样（宁可不剥离，也不损坏内容）。
+    try {
+      const parsed = new DOMParser().parseFromString(html, "text/html");
+      for (const node of parsed.body.querySelectorAll("[class]")) {
+        const kept = Array.from(node.classList).filter((name) =>
+          name.startsWith("language-"),
+        );
+        if (kept.length) node.setAttribute("class", kept.join(" "));
+        else node.removeAttribute("class");
+      }
+      html = parsed.body.innerHTML;
+    } catch {
+      /* 保持原样 */
+    }
   } catch {
     // 兜底降级：即便预检没命中，渲染期抛栈溢出也不再让整条渲染链断裂。
     // 降级 HTML 自带转义（markdownFallback 内已 escapeHtml），不再过 DOMPurify。

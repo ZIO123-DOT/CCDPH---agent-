@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createTerminalProcessRegistry } from "./terminal-registry.mjs";
+import { createDefaultCredentialProtector } from "./credential-protector.mjs";
 import {
   classifyRouteDomain,
   createRouteDomainHandlers,
@@ -60,13 +61,23 @@ export {
 } from "./state-safety.mjs";
 
 const exec = promisify(execFile);
+const WINDOWS_SYSTEM32 = path.join(
+  process.env.SystemRoot || "C:\\Windows",
+  "System32",
+);
+const WINDOWS_TASKKILL_EXE = path.join(WINDOWS_SYSTEM32, "taskkill.exe");
+const WINDOWS_WHERE_EXE = path.join(WINDOWS_SYSTEM32, "where.exe");
+const WINDOWS_CMD_EXE = path.join(WINDOWS_SYSTEM32, "cmd.exe");
 export const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA = process.env.WORKBENCH_DATA_DIR || path.join(ROOT, ".data");
 // 浏览器集成（设计文档 docs/browser-integration-design.md）
 import { detectBrowsers, probeCdp, probeTabs } from "./browser/detect.mjs";
 import { buildPlaywrightMcpConfig, browserMcpEnabled } from "./browser/mcp-config.mjs";
-import { browserStatus, launchDedicatedEdge, stopDedicatedEdge, cdpEndpointFromSettings, cleanupScreenshots } from "./browser/service.mjs";
+import { browserStatus, dedicatedEdgeState, launchDedicatedEdge, stopDedicatedEdge, sweepStaleDedicatedEdge, cdpEndpointFromSettings, cleanupScreenshots } from "./browser/service.mjs";
+import { reconcileDedicatedBrowser, withBrowserSettingsTransition } from "./browser/lifecycle.mjs";
 const token = randomBytes(32).toString("hex");
+const streamAuthToken = randomBytes(32).toString("hex");
+const STREAM_AUTH_COOKIE = "ccdph_stream_auth";
 const port = Number(process.env.WORKBENCH_PORT || 4318);
 const origin = `http://127.0.0.1:${port}`;
 const CCSWITCH_DB =
@@ -134,7 +145,7 @@ const DEFAULT_SETTINGS = {
 // 原实现从根算绝对深度，导致「多层 sessions/events/messages 包裹」的合法库被误判损坏（V4/V5）。
 // CCDPH-FIX(A10-17): 节点上限不再独立拍定 —— 改由 MAX_STATE_BYTES 推导（见下方 STATE_MAX_NODES），
 // 且**不再作为致命门禁**，只用于诊断日志。
-let db = { projects: [], sessions: [], settings: { ...DEFAULT_SETTINGS } };
+let db = { projects: [], sessions: [], settings: structuredClone(DEFAULT_SETTINGS) };
 const runs = new Map();
 const configuredRunLimit = Number(process.env.WORKBENCH_MAX_CONCURRENT_RUNS);
 export const MAX_CONCURRENT_RUNS = Number.isInteger(configuredRunLimit)
@@ -439,13 +450,30 @@ const save = () => {
       // the backup before it is allowed to replace state.json.
       if (foldedStateBackupPending) {
         const pending = foldedStateBackupPending;
-        await fs.copyFile(pending.source, pending.target);
+        let backedUp = false;
+        try {
+          await fs.copyFile(pending.source, pending.target);
+          backedUp = true;
+        } catch (error) {
+          // CCDPH-FIX(P2-4): 原实现的 copyFile 失败会**永久保留** foldedStateBackupPending，
+          // 于是此后每一次 save() 都在这里抛错 → 所有写接口持续 400，进程终生无法持久化
+          //（读接口仍 200，界面看似正常）。区分两种失败：
+          //  - ENOENT：原始文件已不存在（被外部改名/删除），已无可保护的字节 → 清掉 pending 继续写盘；
+          //  - 其他（EACCES/EBUSY/ENOSPC…）：仍坚持"先备份再覆盖"的安全原则，如实抛错由调用方回 400。
+          if (error?.code !== "ENOENT") throw error;
+          console.warn(
+            "[ccdph] 超深状态原文件已不存在，跳过备份并继续写盘:",
+            error?.message || error,
+          );
+        }
         if (foldedStateBackupPending === pending)
           foldedStateBackupPending = null;
-        console.warn(`[ccdph] 超深状态原文件已备份为 ${pending.target}`);
-        await cleanupFoldedStateBackups(pending.source).catch((error) =>
-          console.warn("[ccdph] 清理旧的深状态备份失败:", error?.message || error),
-        );
+        if (backedUp) {
+          console.warn(`[ccdph] 超深状态原文件已备份为 ${pending.target}`);
+          await cleanupFoldedStateBackups(pending.source).catch((error) =>
+            console.warn("[ccdph] 清理旧的深状态备份失败:", error?.message || error),
+          );
+        }
       }
       // CCDPH-FIX(PERF-2): 节流从 save() 里挪走了。原实现在这里 await wait(...)，
       // 而**所有**写接口都 `await save()`，于是「节流」变成了调用方无法回避的
@@ -522,12 +550,16 @@ export async function safePath(root, relative = "") {
   // CCDPH-FIX(M-4): 拒绝 NTFS 备用数据流 / 设备路径
   // 闸门）。`GET /api/file?path=normal.txt:secret` 此前能读出 ADS 隐藏内容；正常路径不含
   // 冒号，盘符（含 \\?\D: 形式）里的 ':' 不是数据流，故先剥前缀、剥盘符再检查。
-  const withoutExtendedPrefix = String(relative).replace(/^\\\\\?\\/, "");
-  const withoutDrive = withoutExtendedPrefix.replace(/^[a-zA-Z]:(?=[\\/]|$)/, "");
-  if (withoutDrive.includes(":"))
-    throw new Error(
-      "路径包含非法字符 ':'（不支持 NTFS 备用数据流 / 设备路径），请改用普通文件名。",
-    );
+  // CCDPH-FIX(P3-5): ':' 是 **Windows** 的 ADS/设备分隔符，POSIX 下是合法文件名 ——
+  // 原来无条件拒绝，导致非 Windows 平台正常文件读不了。
+  if (process.platform === "win32") {
+    const withoutExtendedPrefix = String(relative).replace(/^\\\\\?\\/, "");
+    const withoutDrive = withoutExtendedPrefix.replace(/^[a-zA-Z]:(?=[\\/]|$)/, "");
+    if (withoutDrive.includes(":"))
+      throw new Error(
+        "路径包含非法字符 ':'（不支持 NTFS 备用数据流 / 设备路径），请改用普通文件名。",
+      );
+  }
   const base = await fs.realpath(root);
   let target;
   try {
@@ -548,7 +580,13 @@ export async function readStableBoundedFile(target, maxBytes = 500_000) {
   const handle = await fs.open(target, "r");
   try {
     const opened = await handle.stat();
-    if (opened.dev !== expected.dev || opened.ino !== expected.ino)
+    // CCDPH-FIX(P3-4): Windows 上多数文件系统的 ino 恒为 0，dev/ino 比对形同失效
+    //（0 === 0 恒成立）。Windows 下补一个 size 判据，让"读取准备期间被原子替换"仍能被发现。
+    if (
+      opened.dev !== expected.dev ||
+      opened.ino !== expected.ino ||
+      (process.platform === "win32" && opened.size !== expected.size)
+    )
       throw new Error("文件在读取准备期间已被替换，已拒绝本次读取，请重试");
     if (!opened.isFile()) throw new Error("目标不是普通文件");
     if (opened.size > maxBytes) throw new Error(`文件超过 ${maxBytes} 字节上限`);
@@ -590,6 +628,53 @@ export async function quarantineOversizedStateFile(
       console.error("[ccdph] 写入超限数据恢复说明失败:", error?.message || error),
     );
   return backup;
+}
+// CCDPH-FIX(P3-13): `.corrupt-*` / `.oversize-*` 此前**没有保留期清理**（只有 `.folded-` 有），
+// 反复启动失败会让数据目录无界增长、且用户看不到恢复入口。这里与 folded 备份同一口径：
+// 保留最近 `keep` 个且不超过 `maxAgeMs`，其余删除。
+export async function cleanupStateQuarantineBackups(
+  stateFile,
+  { keep = 3, maxAgeMs = 30 * 86_400_000 } = {},
+) {
+  const folder = path.dirname(stateFile);
+  const base = path.basename(stateFile);
+  const prefixes = [`${base}.corrupt-`, `${base}.oversize-`];
+  const backups = [];
+  let directory;
+  try {
+    directory = await fs.opendir(folder);
+    for await (const entry of directory) {
+      if (!entry.isFile()) continue;
+      const prefix = prefixes.find((candidate) => entry.name.startsWith(candidate));
+      if (!prefix) continue;
+      // CCDPH-FIX(P3-13b): 必须排除恢复说明文件（`state.json.corrupt-readme.txt` 同样以
+      // `state.json.corrupt-` 开头！）。否则它时间解析为 NaN→0 会排在"最旧"，被当成过期备份删掉，
+      // 用户就失去唯一的恢复指引。要求 `corrupt-`/`oversize-` 之后紧跟**数字时间戳**。
+      const stamp = entry.name.slice(prefix.length);
+      if (!/^\d{10,}$/.test(stamp)) continue;
+      backups.push({
+        name: entry.name,
+        time: Number(stamp) || 0,
+      });
+      if (backups.length >= 10_000) break;
+    }
+  } catch (error) {
+    console.warn("[ccdph] 扫描隔离备份失败:", error?.message || error);
+    return { removed: 0 };
+  } finally {
+    await directory?.close().catch(() => { });
+  }
+  backups.sort((a, b) => b.time - a.time);
+  const now = Date.now();
+  let removed = 0;
+  for (let index = keep; index < backups.length; index += 1) {
+    if (now - backups[index].time <= maxAgeMs) continue;
+    await fs.rm(path.join(folder, backups[index].name), { force: true }).catch(() => { });
+    removed += 1;
+  }
+  if (removed)
+    console.warn(`[ccdph] 已清理 ${removed} 个过期的状态隔离备份（.corrupt-* / .oversize-*）`);
+  return { removed };
 }
 export async function cleanupFoldedStateBackups(
   stateFile,
@@ -769,6 +854,17 @@ const messageBytesBySession = new WeakMap();
 const eventBytesByItem = new WeakMap();
 let globalHistoryBytes = 0;
 let globalHistoryBytesDirty = true;
+let globalHistoryOrderRevision = 0;
+let globalHistoryOrderCache = {
+  expiresAt: 0,
+  revision: -1,
+  preferredSession: null,
+  sessions: [],
+};
+function invalidateGlobalHistoryOrder() {
+  globalHistoryOrderRevision += 1;
+  globalHistoryOrderCache.expiresAt = 0;
+}
 function setEventBytesForSession(sessionItem, bytes) {
   const previous = eventBytesBySession.get(sessionItem) || 0;
   eventBytesBySession.set(sessionItem, bytes);
@@ -781,6 +877,7 @@ function setMessageBytesForSession(sessionItem, bytes) {
 }
 function markGlobalHistoryBytesDirty() {
   globalHistoryBytesDirty = true;
+  invalidateGlobalHistoryOrder();
 }
 export function eventSize(event) {
   if (event && typeof event === "object" && eventBytesByItem.has(event))
@@ -912,14 +1009,17 @@ function publish(s, event) {
 function broadcast(s, event) {
   writeSseClients(
     runs.get(s.id)?.clients || EMPTY_CLIENT_SET,
-    `data: ${JSON.stringify(event)} \n\n`,
+    // CCDPH-FIX(P3-6): 原来这里多一个尾随空格（`} \n\n`），与 publish 的帧格式不一致。
+    `data: ${JSON.stringify(event)}\n\n`,
   );
 }
 function currentTaskLabel(s) {
   let text;
   for (let i = s.events.length - 1; i >= 0; i--) {
     if (s.events[i].type === "user") {
-      text = s.events[i].text?.replace(/\s+/g, " ").trim();
+      // CCDPH-FIX(P3-7): `text?.replace` 的 `?.` 只挡 null/undefined，挡不住 number 等类型
+      // → 会抛 TypeError（渲染任务标题时）。统一走 String()。
+      text = String(s.events[i].text ?? "").replace(/\s+/g, " ").trim();
       break;
     }
   }
@@ -948,7 +1048,7 @@ async function findClaude() {
   push(path.join(localAppData, "Programs", "claude", "claude.exe"));
   // where.exe 兜底：能找到 PATH 里注册的 claude.cmd / claude.exe / claude.bat
   try {
-    const { stdout } = await exec("where.exe", ["claude"], {
+    const { stdout } = await exec(WINDOWS_WHERE_EXE, ["claude"], {
       windowsHide: true,
       timeout: 8000,
     });
@@ -1034,7 +1134,7 @@ async function redetectClaude() {
 
 // ===== 自动更新 =====
 // CCDPH-FIX(M-6): 版本号唯一事实源 —— 从 package.json 的 version 读取（本次已升到
-// 0.3.1），根治硬编码常量与 package.json 漂移的问题。server.mjs 是 ESM，用
+// 0.3.2），根治硬编码常量与 package.json 漂移的问题。server.mjs 是 ESM，用
 // createRequire 读 JSON 兼容性最稳；读取失败（文件缺失/JSON 损坏）时回退 "0.3.0"
 // 并落一行错误日志，不影响启动。
 const APP_VERSION = (() => {
@@ -1318,6 +1418,16 @@ export async function validateZipArchivePaths(zipPath, extractDir) {
       names.push(directory.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8"));
       cursor = end;
     }
+    // CCDPH-FIX(P3-1): 校验中央目录被**完整消费** —— 循环结束后 cursor 必须落在目录末尾，
+    // 否则说明"声明的条目数"与目录实际内容不一致（尾部藏着未校验的结构）。
+    // 允许紧随其后的可选"数字签名"记录（0x05054b50）。
+    if (cursor !== directory.length) {
+      const isSignatureRecord =
+        cursor + 6 <= directory.length &&
+        directory.readUInt32LE(cursor) === 0x05054b50;
+      if (!isSignatureRecord)
+        throw new Error("更新包中央目录长度与条目数不一致");
+    }
     assertSafeZipEntries(extractDir, names);
     return names;
   } finally {
@@ -1443,13 +1553,17 @@ async function installUpdate(onStage = () => { }) {
     const exeName = "CCDPH.exe";
     let appDir = "";
     const entries = await fs.readdir(extractDir, { withFileTypes: true });
-    if (entries.some((entry) => entry.name === exeName)) appDir = extractDir;
+    // CCDPH-FIX(P3-21): 原来只比 `entry.name === "CCDPH.exe"`（大小写敏感、且不校验是否为文件）。
+    // 不同机器/打包器可能产出小写名，或同名项其实是目录 → "找不到应用目录"。
+    const isExe = (entry) =>
+      entry.isFile() && entry.name.toLowerCase() === exeName.toLowerCase();
+    if (entries.some(isExe)) appDir = extractDir;
     else {
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const child = path.join(extractDir, entry.name);
         const childEntries = await fs.readdir(child, { withFileTypes: true });
-        if (childEntries.some((item) => item.name === exeName)) {
+        if (childEntries.some(isExe)) {
           appDir = child;
           break;
         }
@@ -1479,14 +1593,17 @@ async function installUpdate(onStage = () => { }) {
     // 中文说明只能写在这里（JS 源文件按 UTF-8 读，.bat 不是）。
     const bat = [
       "@echo off",
-      "chcp 65001 >nul",
-      "timeout /t 3 /nobreak >nul",
-      `taskkill /pid ${process.pid} /f >nul 2>&1`,
-      "timeout /t 1 /nobreak >nul",
-      'robocopy "%CCDPH_SRC%" "%CCDPH_DST%" /E /NFL /NDL /NJH /NJS /NP',
+      '"%SystemRoot%\\System32\\chcp.com" 65001 >nul',
+      '"%SystemRoot%\\System32\\timeout.exe" /t 3 /nobreak >nul',
+      `"%SystemRoot%\\System32\\taskkill.exe" /pid ${process.pid} /f >nul 2>&1`,
+      '"%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >nul',
+      '"%SystemRoot%\\System32\\robocopy.exe" "%CCDPH_SRC%" "%CCDPH_DST%" /E /NFL /NDL /NJH /NJS /NP',
       "rem robocopy exit code >= 8 means the copy failed",
       "if errorlevel 8 (",
       '  cd /d "%TEMP%" & rmdir /s /q "%CCDPH_STAGE%"',
+      "  rem CCDPH-FIX(P2-9): the app was already taskkilled above; relaunch it so a failed",
+      "  rem copy does not leave the user with neither an updated nor a running app.",
+      '  start "" "%CCDPH_EXE%"',
       "  exit /b 1",
       ")",
       'start "" "%CCDPH_EXE%"',
@@ -1495,18 +1612,29 @@ async function installUpdate(onStage = () => { }) {
       "",
     ].join("\r\n");
     await fs.writeFile(batPath, bat, "utf8");
-    spawn("cmd.exe", ["/c", batPath], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      env: {
-        ...process.env,
-        CCDPH_SRC: appDir,
-        CCDPH_DST: installDir,
-        CCDPH_STAGE: stageDir,
-        CCDPH_EXE: path.join(installDir, exeName),
-      },
-    }).unref();
+    // CCDPH-FIX(P1-2): 原来直接 `spawn(...).unref()` 且**没有 error 监听** —— cmd.exe 启动失败
+    // （被杀软拦截 / EACCES / 磁盘异常）会抛出未处理的 'error' 事件，触发 desktop.cjs 的全局
+    // uncaughtException 兜底，把整个应用退出。这里改为等 'spawn' 确认启动成功后再 unref；
+    // 失败则 reject，交由外层 catch 回收暂存目录并如实回 400（不再"失败伪装成功"）。
+    await new Promise((resolve, reject) => {
+      const updater = spawn(WINDOWS_CMD_EXE, ["/c", batPath], {
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+        env: {
+          ...process.env,
+          CCDPH_SRC: appDir,
+          CCDPH_DST: installDir,
+          CCDPH_STAGE: stageDir,
+          CCDPH_EXE: path.join(installDir, exeName),
+        },
+      });
+      updater.once("spawn", () => {
+        updater.unref();
+        resolve();
+      });
+      updater.once("error", (error) => reject(error));
+    });
     return { ok: true, version: check.latest };
   } catch (error) {
     // CCDPH-FIX(F-07): 失败必须回收暂存目录（含已下载的 update.zip）
@@ -1550,39 +1678,119 @@ function providerEnv(row) {
 const API_AUTH_FILE = path.join(DATA, "api-auth.json");
 const API_AUTH_MAX_BYTES = 1024 * 1024;
 let apiTokens = {}; // profileId -> key
+let credentialProtector = createDefaultCredentialProtector(API_AUTH_MAX_BYTES);
+let apiAuthNeedsRewrite = false;
+let apiAuthLockedError = "";
+let apiAuthPersistence = credentialProtector ? "encrypted" : "session";
+let apiAuthWarning = credentialProtector
+  ? ""
+  : "当前平台没有可用的系统安全存储；API 密钥仅在本次运行期间保存在内存中";
+export function setCredentialProtector(protector) {
+  credentialProtector =
+    protector &&
+    typeof protector.name === "string" &&
+    typeof protector.encrypt === "function" &&
+    typeof protector.decrypt === "function"
+      ? protector
+      : null;
+  apiAuthPersistence = credentialProtector ? "encrypted" : "session";
+  apiAuthWarning = credentialProtector
+    ? ""
+    : "当前平台没有可用的系统安全存储；API 密钥仅在本次运行期间保存在内存中";
+}
 // CCDPH-FIX(F-13): 形如凭据的环境变量名（*_TOKEN / *_API_KEY / *_AUTH* / *_SECRET* /
 // *_PASSWORD）一律不允许出现在 profile.env —— 那条通道会被写进 state.json 并回传页面。
 const CREDENTIAL_ENV_KEY_RE = /(_TOKEN|_API_KEY|_AUTH|_SECRET|_PASSWORD)/;
 async function loadApiAuth() {
   try {
-    const data = JSON.parse(
+    const stored = JSON.parse(
       (await readStableBoundedFile(API_AUTH_FILE, API_AUTH_MAX_BYTES)).toString(
         "utf8",
       ),
     );
+    let data = stored;
+    if (stored?.version === 2) {
+      if (!credentialProtector)
+        throw new Error("当前运行环境无法解密供应商密钥");
+      if (stored.protection !== credentialProtector.name)
+        throw new Error(
+          `供应商密钥由 ${stored.protection || "未知保护器"} 加密，当前环境无法解密`,
+        );
+      data = JSON.parse(
+        (await credentialProtector.decrypt(String(stored.payload || ""))) || "",
+      );
+    }
     apiTokens =
       data.tokens && typeof data.tokens === "object" ? { ...data.tokens } : {};
     // 旧版单密钥格式：暂存到 legacy 键，等迁移逻辑挪进对应 profile
     if (typeof data.token === "string" && data.token) apiTokens.legacy = data.token;
-  } catch {
+    apiAuthNeedsRewrite = stored?.version !== 2;
+    apiAuthLockedError = "";
+    apiAuthPersistence = credentialProtector ? "encrypted" : "session";
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error("[ccdph] 读取供应商密钥失败:", error?.message || error);
+      apiAuthLockedError = String(error?.message || "供应商密钥无法解密");
+      apiAuthPersistence = "locked";
+      apiAuthWarning = "供应商密钥库无法解密，已锁定且不会覆盖原文件";
+    } else {
+      apiAuthLockedError = "";
+      apiAuthPersistence = credentialProtector ? "encrypted" : "session";
+      apiAuthWarning = credentialProtector
+        ? ""
+        : "当前平台没有可用的系统安全存储；API 密钥仅在本次运行期间保存在内存中";
+    }
     apiTokens = {};
+    apiAuthNeedsRewrite = false;
   }
 }
 async function writeApiAuth() {
+  if (apiAuthLockedError)
+    throw new Error(
+      `供应商密钥库已锁定，原文件保持不变：${apiAuthLockedError}`,
+    );
   // 串行化并发写入，避免多个 save 请求竞态写出半截 JSON
   const task = apiAuthSaving.then(async () => {
     const clean = Object.fromEntries(
       Object.entries(apiTokens).filter(([, value]) => value),
     );
     if (!Object.keys(clean).length) {
-      try { await fs.rm(API_AUTH_FILE, { force: true }); } catch { }
-      return;
+      // CCDPH-FIX(P3-13): 删除失败被静默吞掉会留下"内存里没有密钥、磁盘上仍有旧密钥"
+      // —— 重启后密钥"复活"。至少留下可查日志。
+      try {
+        await fs.rm(API_AUTH_FILE, { force: true });
+      } catch (error) {
+        console.error(
+          "[ccdph] 删除空密钥文件失败（磁盘上可能仍残留旧密钥）:",
+          error?.message || error,
+        );
+      }
+      apiAuthNeedsRewrite = false;
+      return { persistent: apiAuthPersistence === "encrypted" };
     }
-    const text = JSON.stringify({ tokens: clean }, null, 2);
+    if (!credentialProtector || apiAuthPersistence === "session") {
+      await fs.rm(API_AUTH_FILE, { force: true });
+      apiAuthNeedsRewrite = false;
+      apiAuthPersistence = "session";
+      apiAuthWarning =
+        "系统安全存储不可用；API 密钥仅在本次运行期间保存在内存中，退出后需要重新输入";
+      return { persistent: false };
+    }
+    const plaintext = JSON.stringify({ tokens: clean });
+    const document = {
+      version: 2,
+      protection: credentialProtector.name,
+      payload: await credentialProtector.encrypt(plaintext),
+    };
+    const text = JSON.stringify(document, null, 2);
     if (Buffer.byteLength(text, "utf8") > API_AUTH_MAX_BYTES)
       throw new Error("API 密钥配置超过安全写入上限");
     await fs.mkdir(DATA, { recursive: true });
     await fs.writeFile(API_AUTH_FILE, text, "utf8");
+    apiAuthNeedsRewrite = false;
+    apiAuthPersistence = "encrypted";
+    apiAuthWarning = "";
+    return { persistent: true };
   });
   // CCDPH-FIX(F-05): 原来把 .catch(console.error) 挂在链尾并返回它，写盘失败被彻底
   // 吞掉 → /api/api-profiles/key 对一个「只存在内存里」的密钥回 {ok:true,hasKey:true}。
@@ -1607,7 +1815,7 @@ async function saveProfileToken(id, token) {
   if (token) apiTokens[id] = token;
   else delete apiTokens[id];
   try {
-    await writeApiAuth();
+    return await writeApiAuth();
   } catch (error) {
     if (previous === undefined) delete apiTokens[id];
     else apiTokens[id] = previous;
@@ -1723,6 +1931,8 @@ const PERSONA_PROMPTS = {
 };
 const USAGE_DAILY_KEEP_DAYS = 60;
 export function normalizeUsageDaily(value, limit = USAGE_DAILY_KEEP_DAYS) {
+  // CCDPH-FIX(P3-23): limit=0 时 `.slice(-0)` 等价 `.slice(0)` → 一条都不删（保留上限失效）。
+  const keep = Math.max(1, Math.floor(Number(limit)) || USAGE_DAILY_KEEP_DAYS);
   const entries = Object.entries(value || {})
     .filter(
       ([date, item]) =>
@@ -1732,7 +1942,7 @@ export function normalizeUsageDaily(value, limit = USAGE_DAILY_KEEP_DAYS) {
         !Array.isArray(item),
     )
     .sort(([a], [b]) => a.localeCompare(b))
-    .slice(-limit);
+    .slice(-keep);
   return Object.fromEntries(entries);
 }
 function buildPersonaPrompt() {
@@ -1833,6 +2043,11 @@ async function fetchJson(url, tokenValue) {
       Accept: "application/json",
     },
     signal: AbortSignal.timeout(12000),
+    // CCDPH-FIX(P3-19): 余额请求此前跟随重定向，而域名白名单只校验**初始** URL —— 白名单域
+    // 返回 302 即可把请求导向非白名单主机（本地/内网 SSRF）。这里直接拒绝重定向
+    //（与更新清单/安装包的处理保持一致）。undici 跨源会剥掉 Authorization，
+    // 但请求本身仍会被发出，所以必须在此拦住。
+    redirect: "error",
   });
   if (!response.ok) throw new Error(`余额接口返回 HTTP ${response.status}`);
   return readJsonResponseBounded(response, 1024 * 1024);
@@ -2278,7 +2493,7 @@ function killProcessTree(child) {
       return fallback();
     try {
       const killer = execFile(
-        "taskkill",
+        WINDOWS_TASKKILL_EXE,
         ["/PID", String(pid), "/T", "/F"],
         { windowsHide: true, timeout: KILL_TREE_TIMEOUT },
         (error) => {
@@ -2303,6 +2518,9 @@ export async function stopRuns() {
     run.abort.abort();
     closeSseClients(run.clients);
   }
+  // CCDPH-FIX(P3-16): 原来是逐条 `await killProcessTree()`，串行会把退出拖成
+  // N × KILL_TREE_TIMEOUT（上限 8 个终端即数十秒）。改为并行收尾，仍然等待全部完成。
+  const killTasks = [];
   for (const terminal of terminals.values()) {
     clearTimeout(terminal.releaseTimer);
     closeSseClients(terminal.clients);
@@ -2310,8 +2528,9 @@ export async function stopRuns() {
     // CCDPH-FIX(A10-21): 必须 await 树杀灭完成 —— 否则 stopRuns() 在 taskkill 落地前
     // 就 resolve，shutdown() 紧接着 process.exit(0)，孙进程照样残留（fire-and-forget
     // 与退出的竞态）。有 KILL_TREE_TIMEOUT+1s 的有界兜底，不会拖死退出路径。
-    if (!terminal.exited) await killProcessTree(terminal.child);
+    if (!terminal.exited) killTasks.push(killProcessTree(terminal.child));
   }
+  await Promise.all(killTasks);
   terminals.clear();
   await terminalProcessRegistry.schedule();
   await save();
@@ -2531,7 +2750,12 @@ async function runTurn(s, prompt, model, permissionMode, images = []) {
         if (message.is_error)
           publish(s, {
             type: "error",
-            text: (message.errors || [message.result || message.subtype]).join(
+            // CCDPH-FIX(P3-22): message.errors 非数组（上游给字符串/对象）时 `.join` 会抛
+            // TypeError，异常文案又经 sanitizeError 回显 → 该轮错误内容失真。
+            text: (Array.isArray(message.errors)
+              ? message.errors
+              : [message.result || message.subtype]
+            ).join(
               "\n",
             ),
           });
@@ -2669,13 +2893,33 @@ function enforceGlobalHistoryBudget(preferredSession = null) {
   if (total <= GLOBAL_HISTORY_MAX_BYTES) return false;
   let excess = total - GLOBAL_HISTORY_MAX_BYTES;
   let changed = false;
-  const candidates = [...db.sessions].sort((a, b) => {
-    if (a === preferredSession) return 1;
-    if (b === preferredSession) return -1;
-    if (Boolean(a.archived) !== Boolean(b.archived)) return a.archived ? -1 : 1;
-    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? 1 : -1;
-    return (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0);
-  });
+  const now = Date.now();
+  if (
+    globalHistoryOrderCache.expiresAt <= now ||
+    globalHistoryOrderCache.sessions.length !== db.sessions.length ||
+    globalHistoryOrderCache.revision !== globalHistoryOrderRevision ||
+    globalHistoryOrderCache.preferredSession !== preferredSession
+  ) {
+    globalHistoryOrderCache = {
+      expiresAt: now + 1000,
+      revision: globalHistoryOrderRevision,
+      preferredSession,
+      sessions: [...db.sessions].sort((a, b) => {
+        if (Boolean(a.archived) !== Boolean(b.archived))
+          return a.archived ? -1 : 1;
+        if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? 1 : -1;
+        return (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0);
+      }),
+    };
+  }
+  const candidates = preferredSession
+    ? [
+        ...globalHistoryOrderCache.sessions.filter(
+          (item) => item !== preferredSession,
+        ),
+        preferredSession,
+      ]
+    : globalHistoryOrderCache.sessions;
   const trimOldest = (sessionItem, key, sizeOf, cache) => {
     const list = Array.isArray(sessionItem[key]) ? sessionItem[key] : [];
     if (list.length <= 1 || excess <= 0) return;
@@ -2914,6 +3158,8 @@ const json = (res, value, code = 200) => {
     res.writeHead(500, {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
     });
     res.end(JSON.stringify({ error: "响应序列化失败" }));
     return;
@@ -2921,6 +3167,8 @@ const json = (res, value, code = 200) => {
   res.writeHead(code, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(text);
 };
@@ -3100,6 +3348,7 @@ async function findFiles(root, needle, limit = 120) {
   const MAX_ENTRIES = 100_000;
   let entriesVisited = 0;
   let entryLimitReached = false;
+  let dirsSkipped = 0;
   while (pending.length && matches.length < limit && !entryLimitReached) {
     const folder = pending.pop();
     let directory;
@@ -3117,13 +3366,23 @@ async function findFiles(root, needle, limit = 120) {
           if (dirsQueued < MAX_DIRS) {
             dirsQueued++;
             pending.push(absolute);
+          } else {
+            // CCDPH-FIX(P3-10): 记录"真的丢弃了目录"，用于如实判断 truncated
+            //（原来只看 dirsQueued >= MAX_DIRS，恰好排满且全部处理完也会误报截断）。
+            dirsSkipped += 1;
           }
         } else if (entry.name.toLocaleLowerCase().includes(normalized)) {
           matches.push(path.relative(root, absolute).replaceAll("\\", "/"));
           if (matches.length >= limit) break;
         }
       }
-    } catch {
+    } catch (error) {
+      // CCDPH-FIX(P3-10): 原来静默 continue —— 权限/IO 错误会让结果缺失却 truncated=false。
+      console.warn(
+        "[ccdph] 搜索文件时读取目录失败，已跳过:",
+        folder,
+        error?.message || error,
+      );
       continue;
     } finally {
       await directory?.close().catch(() => { });
@@ -3133,11 +3392,11 @@ async function findFiles(root, needle, limit = 120) {
   // 搜索结果可能不完整却毫无提示。这里把「是否被截断」如实回传给前端。
   return {
     files: matches.sort((a, b) => a.length - b.length || a.localeCompare(b)),
-    truncated: dirsQueued >= MAX_DIRS || entryLimitReached,
+    truncated: dirsSkipped > 0 || entryLimitReached,
     truncationReason:
       entryLimitReached
         ? `文件条目超过 ${MAX_ENTRIES}，仅返回部分结果`
-        : dirsQueued >= MAX_DIRS
+        : dirsSkipped > 0
         ? `目录数量超过 ${MAX_DIRS}，仅返回部分结果`
         : "",
   };
@@ -3179,7 +3438,21 @@ async function getChanges(root) {
   let additions = 0,
     deletions = 0;
   try {
-    const numstat = await git(root, ["diff", "--numstat", "HEAD", "--", "."]);
+    // CCDPH-FIX(P3-9): 原来 `git diff --numstat` 失败被静默吞掉，改动行数静默显示为 0
+    //（界面看起来"没有改动"）。至少留下可查日志。
+    const numstat = await git(root, [
+      "diff",
+      "--numstat",
+      "HEAD",
+      "--",
+      ".",
+    ]).catch((error) => {
+      console.warn(
+        "[ccdph] git diff --numstat 失败，本次改动行数按 0 统计:",
+        error?.message || error,
+      );
+      return "";
+    });
     for (const line of numstat.trim().split("\n")) {
       const [add, del] = line.split("\t");
       if (/^\d+$/.test(add)) additions += Number(add);
@@ -3206,7 +3479,10 @@ async function getChanges(root) {
   changesCache.set(root, { at: Date.now(), value: result });
   return result;
 }
-async function getProjectInfo(root) {
+const PROJECT_INFO_CACHE_TTL = 1500;
+const PROJECT_INFO_CACHE_MAX = 64;
+const projectInfoCache = new Map();
+async function loadProjectInfo(root) {
   let gitError = "";
   try {
     const inside = (
@@ -3255,6 +3531,26 @@ async function getProjectInfo(root) {
     gitError,
     ...changes,
   };
+}
+async function getProjectInfo(root) {
+  const cached = projectInfoCache.get(root);
+  if (cached && Date.now() - cached.at < PROJECT_INFO_CACHE_TTL) {
+    // CCDPH-FIX(P3-24): 命中时刷新插入序，使其成为真正的 LRU。原来淘汰按**插入序**取
+    // `keys().next()`，热点条目会被误逐（与 changesCache 的"按 at"策略不一致）。
+    projectInfoCache.delete(root);
+    projectInfoCache.set(root, cached);
+    return cached.value;
+  }
+  const pending = loadProjectInfo(root).catch((error) => {
+    projectInfoCache.delete(root);
+    throw error;
+  });
+  if (projectInfoCache.size >= PROJECT_INFO_CACHE_MAX) {
+    const oldest = projectInfoCache.keys().next().value;
+    if (oldest !== undefined) projectInfoCache.delete(oldest);
+  }
+  projectInfoCache.set(root, { at: Date.now(), value: pending });
+  return pending;
 }
 
 // ---- Worktree 目录落点：与 createWorktree 保持一致（数据目录在项目内时回退到系统临时目录）----
@@ -3328,16 +3624,13 @@ async function listWorktrees(root) {
     else if (line === "bare") current.bare = true;
   }
   if (current) entries.push(current);
-  const result = [];
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index];
-    result.push({
+  return Promise.all(
+    entries.map(async (entry, index) => ({
       ...entry,
       main: index === 0, // git worktree list 的第一项即主工作区
       exists: await pathExists(entry.path),
-    });
-  }
-  return result;
+    })),
+  );
 }
 // 从 worktree 列表中按路径匹配（Windows 大小写不敏感），用于阻止任意路径操作
 function matchWorktree(worktrees, target) {
@@ -3491,6 +3784,9 @@ function hooksCount(hooks) {
 }
 // 校验单条 hook（matcher + 至少一条命令），返回可写入的标准结构
 function validateHookItem(item, event) {
+  // CCDPH-FIX(P3-10): 非字符串 matcher 会被 String() 静默变成 "[object Object]" 落盘。
+  if (item?.matcher !== undefined && typeof item.matcher !== "string")
+    throw new Error(`事件 ${event} 的 matcher 必须是字符串`);
   const matcher = item?.matcher === undefined ? "" : String(item.matcher);
   if (matcher.length > 200)
     throw new Error(`事件 ${event} 的 matcher 不能超过 200 字`);
@@ -3502,9 +3798,22 @@ function validateHookItem(item, event) {
     const command = typeof hook?.command === "string" ? hook.command.trim() : "";
     if (!command) throw new Error("Hook 命令不能为空");
     if (command.length > 2000) throw new Error("Hook 命令不能超过 2000 字");
-    hooks.push({ type: hook?.type === "prompt" ? "prompt" : "command", command });
+    // CCDPH-FIX(P3-9): 原来只保留 type/command，把 hook 上的其他字段（如 timeout）
+    // 静默丢弃。这里保留除 type/command 之外的自有字段。
+    const extraHook = {};
+    for (const [key, value] of Object.entries(hook || {}))
+      if (key !== "type" && key !== "command") extraHook[key] = value;
+    hooks.push({
+      ...extraHook,
+      type: hook?.type === "prompt" ? "prompt" : "command",
+      command,
+    });
   }
-  return { matcher, hooks };
+  // CCDPH-FIX(P3-9): 同理保留条目上除 matcher/hooks 之外的自有字段（如 name/timeout）。
+  const extra = {};
+  for (const [key, value] of Object.entries(item || {}))
+    if (key !== "matcher" && key !== "hooks") extra[key] = value;
+  return { ...extra, matcher, hooks };
 }
 // CCDPH-FIX(F-08): 单事件 Hook 条数上限提取成常量 —— 之前 50 只是 action:"set"
 // 路径里的字面量，action:"add" 完全不受约束，同一份文档因此有两套口径。
@@ -3665,8 +3974,17 @@ async function startTerminal(root) {
     if (!oldest)
       throw new Error("终端数量已达上限，当前终端都正在使用，请先关闭一个终端");
     terminals.delete(oldest.id);
-    // CCDPH-FIX(HIGH-4): 整棵进程树一起结束（原来 child.kill() 只杀 shell，孙进程变孤儿）
-    await killProcessTree(oldest.child);
+    // CCDPH-FIX(P3-12): killProcessTree 抛错时原实现会既没 finishTerminal、又已经把它从
+    // terminals 里删掉 —— 子进程/监听器残留且面板不再更新。这里兜住并始终收尾。
+    try {
+      // CCDPH-FIX(HIGH-4): 整棵进程树一起结束（原来 child.kill() 只杀 shell，孙进程变孤儿）
+      await killProcessTree(oldest.child);
+    } catch (error) {
+      console.error(
+        "[ccdph] 回收终端时结束进程树失败:",
+        error?.message || error,
+      );
+    }
     finishTerminal(oldest, null, "终端数量已达上限，已回收最久未使用的终端");
   }
   const id = randomUUID();
@@ -4130,6 +4448,36 @@ const routeWorkspaceIoDomain = createWorkspaceIoRoute({
   workspaceRoot,
   writeSseClients,
 });
+const browserLifecycleDeps = {
+  dataDir: DATA,
+  browserStatus,
+  dedicatedEdgeState,
+  detectBrowsers,
+  launchDedicatedEdge,
+  stopDedicatedEdge,
+};
+const reconcileBrowserRuntime = (settings) =>
+  reconcileDedicatedBrowser(settings, browserLifecycleDeps);
+async function commitBrowserSettings(nextBrowser) {
+  const previousBrowser = db.settings.browser;
+  return withBrowserSettingsTransition({
+    previous: previousBrowser,
+    next: nextBrowser,
+    reconcile: reconcileBrowserRuntime,
+    commit: async (next) => {
+      db.settings.browser = next;
+      await save();
+    },
+    rollback: async (previous) => {
+      db.settings.browser = previous;
+    },
+    onRollbackError: (error) =>
+      console.error(
+        "[ccdph] 恢复专用浏览器运行状态失败:",
+        error?.message || error,
+      ),
+  });
+}
 const routeIntegrationDomain = createIntegrationRoute({
   DATA,
   MAX_HOOKS_PER_EVENT,
@@ -4137,6 +4485,7 @@ const routeIntegrationDomain = createIntegrationRoute({
   body,
   browserStatus,
   cdpEndpointFromSettings,
+  commitBrowserSettings,
   detectBrowsers,
   getDb: () => db,
   getExternalOpener: () => externalOpener,
@@ -4144,7 +4493,6 @@ const routeIntegrationDomain = createIntegrationRoute({
   hooksWriteQueue,
   isValidPort,
   json,
-  launchDedicatedEdge,
   mcpWriteQueue,
   readJsonFile,
   readMcpDoc,
@@ -4152,11 +4500,9 @@ const routeIntegrationDomain = createIntegrationRoute({
   requireObject,
   restoreRedactedHookCommands,
   sanitizeMcpEntry,
-  save,
   serializeHooks,
   settingsJsonPath,
   settingsWriteQueue,
-  stopDedicatedEdge,
   validateHookItem,
   validateHooksStructure,
   workspaceRoot,
@@ -4179,9 +4525,9 @@ const routeWorkspaceMutationDomain = createWorkspaceMutationRoute({
   listWorktrees,
   markGlobalHistoryBytesDirty,
   matchWorktree,
-  pathExists,
   redetectClaude,
   removeWorktreeOf,
+  resolveAuthorizedWorktreeTarget,
   repoRootFor,
   requireObject,
   sanitizeError,
@@ -4208,6 +4554,8 @@ export function buildPublicStateSnapshot() {
       error: claudeError,
     },
     apiAuthConfigured: Boolean(apiTokens[db.settings.activeProfileId]),
+    apiAuthPersistence,
+    apiAuthWarning,
     version: APP_VERSION,
   };
 }
@@ -4333,6 +4681,24 @@ async function routeSessionDomain(req, res, url, pathname) {
     const input = requireObject(await body(req));
     return await sessionWriteQueue(async () => {
       const s = session(input.sessionId);
+      if (
+        s.running &&
+        ["model", "effort", "permissionMode", "providerId"].some(
+          (key) => input[key] !== undefined,
+        )
+      )
+        throw new Error("任务运行中请使用实时控制接口修改模型、权限或思考强度");
+    // CCDPH-FIX(P2-5): 先改内存再写盘，写盘失败必须能回滚（见下方 try/catch）。
+    const beforeUpdate = {
+      title: s.title,
+      pinned: s.pinned,
+      archived: s.archived,
+      model: s.model,
+      providerId: s.providerId,
+      effort: s.effort,
+      permissionMode: s.permissionMode,
+      updatedAt: s.updatedAt,
+    };
     if (typeof input.title === "string") {
       const title = input.title.trim().slice(0, 80);
       if (!title) throw new Error("会话名称不能为空");
@@ -4359,7 +4725,16 @@ async function routeSessionDomain(req, res, url, pathname) {
     if (PERMISSION_MODES.includes(input.permissionMode))
       s.permissionMode = input.permissionMode;
     s.updatedAt = Date.now();
+    try {
+      invalidateGlobalHistoryOrder();
       await save();
+    } catch (error) {
+      // CCDPH-FIX(P2-5): 原来先改内存再 `await save()`，写盘失败时接口回 400 但会话**已经
+      // 被改**（内存与磁盘不一致：重启后表现为"刚改的东西莫名其妙回退/出现"）。这里回滚。
+      Object.assign(s, beforeUpdate);
+      invalidateGlobalHistoryOrder();
+      throw error;
+    }
       return json(res, s);
     });
   }
@@ -4382,29 +4757,83 @@ async function routeSessionDomain(req, res, url, pathname) {
         throw new Error(
           "自动模式任务运行中无法切换到需要宿主确认的权限模式；请先停止任务，再修改权限模式",
         );
-
-      // SDK 调用成功后才更新内存态；串行队列确保同一时刻只有一项会话写操作。
-      if (["", "sonnet", "opus", "haiku"].includes(input.model)) {
-        await run.query.setModel(input.model || undefined);
-        s.model = input.model;
-      }
       if (
-        ["inherit", "low", "medium", "high", "xhigh", "max"].includes(
-          input.effort,
-        )
-      ) {
-        await run.query.applyFlagSettings({
-          effortLevel: input.effort === "inherit" ? null : input.effort,
-        });
-        s.effort = input.effort;
+        input.permissionMode === "auto" &&
+        s.permissionMode !== "auto" &&
+        input.confirmAutoEscalation !== true
+      )
+        throw new Error("运行中切换到自动模式需要明确确认");
+
+      const previous = {
+        model: s.model,
+        effort: s.effort,
+        permissionMode: s.permissionMode,
+        updatedAt: s.updatedAt,
+      };
+      const applied = [];
+      try {
+        if (["", "sonnet", "opus", "haiku"].includes(input.model)) {
+          await run.query.setModel(input.model || undefined);
+          s.model = input.model;
+          applied.push("model");
+        }
+        if (
+          ["inherit", "low", "medium", "high", "xhigh", "max"].includes(
+            input.effort,
+          )
+        ) {
+          await run.query.applyFlagSettings({
+            effortLevel: input.effort === "inherit" ? null : input.effort,
+          });
+          s.effort = input.effort;
+          applied.push("effort");
+        }
+        if (PERMISSION_MODES.includes(input.permissionMode)) {
+          await run.query.setPermissionMode(input.permissionMode);
+          s.permissionMode = input.permissionMode;
+          applied.push("permissionMode");
+        }
+        s.updatedAt = Date.now();
+        await save();
+      } catch (error) {
+        Object.assign(s, previous);
+        let rollbackFailed = false;
+        for (const field of applied.reverse()) {
+          try {
+            if (field === "permissionMode")
+              await run.query.setPermissionMode(previous.permissionMode);
+            else if (field === "effort")
+              await run.query.applyFlagSettings({
+                effortLevel:
+                  previous.effort === "inherit" ? null : previous.effort,
+              });
+            else if (field === "model")
+              await run.query.setModel(previous.model || undefined);
+          } catch (rollbackError) {
+            rollbackFailed = true;
+            console.error(
+              `[ccdph] 实时会话控制回滚失败（${field}）:`,
+              rollbackError?.message || rollbackError,
+            );
+          }
+        }
+        if (rollbackFailed) {
+          run.abort.abort();
+          forceSettleRun(s.id, run, "实时设置回滚失败，任务已安全停止");
+        }
+        throw error;
       }
-      if (PERMISSION_MODES.includes(input.permissionMode)) {
-        await run.query.setPermissionMode(input.permissionMode);
-        s.permissionMode = input.permissionMode;
-      }
-      s.updatedAt = Date.now();
-      await save();
-      return json(res, { session: s, liveApplied: true });
+      // CCDPH-FIX(P2-3): 明确请求、但不在白名单内因而**没有应用**的字段必须如实回报。
+      // 原实现无论是否应用都返回 liveApplied:true，前端据此提示"已更新"，用户以为
+      // 自定义供应商模型 / 思考强度已切换，实际并未生效（UI 与服务端状态背离）。
+      const rejected = [];
+      if (input.model !== undefined && !applied.includes("model"))
+        rejected.push("model");
+      if (input.effort !== undefined && !applied.includes("effort"))
+        rejected.push("effort");
+      if (input.permissionMode !== undefined && !applied.includes("permissionMode"))
+        rejected.push("permissionMode");
+      return json(res, { session: s, liveApplied: rejected.length === 0, rejected });
     });
   }
   if (req.method === "POST" && pathname === "/api/session/delete") {
@@ -4412,10 +4841,26 @@ async function routeSessionDomain(req, res, url, pathname) {
     return await sessionWriteQueue(async () => {
       const s = session(input.sessionId);
       if (s.running) throw new Error("请先停止正在运行的任务");
-      const worktree = await removeWorktreeOf(s);
+      // CCDPH-FIX(P2-6): 先把记录从库中移除并**落盘**，再删 worktree 目录。
+      // 原顺序相反：先 `removeWorktreeOf()`（删目录，**不可逆**）再 `await save()`，一旦写盘
+      // 失败就回 400 而目录已经没了。现在写盘失败可原样回滚（目录未动）；目录删除失败只是
+      // 留下一个可人工清理的垃圾目录。
       db.sessions = db.sessions.filter((item) => item.id !== s.id);
       markGlobalHistoryBytesDirty();
-      await save();
+      try {
+        await save();
+      } catch (error) {
+        db.sessions.push(s);
+        markGlobalHistoryBytesDirty();
+        throw error;
+      }
+      const worktree = await removeWorktreeOf(s).catch((error) => {
+        console.error(
+          "[ccdph] 会话已删除，但清理其 worktree 目录失败（可能残留）:",
+          error?.message || error,
+        );
+        return { removed: 0, kept: 1 };
+      });
       return json(res, { ok: true, worktree });
     });
   }
@@ -4546,18 +4991,25 @@ async function routeSessionDomain(req, res, url, pathname) {
       run.abort.abort();
       forceSettleRun(s.id, run, "任务运行时间过长，已强制结束");
     });
-    publish(s, {
-      type: "user",
-      text:
-        typeof input.displayPrompt === "string" && input.displayPrompt.trim()
-          ? input.displayPrompt.trim().slice(0, 100000)
-          : prompt,
-      images: images.map(({ name, type, preview }) => ({
-        name,
-        type,
-        preview,
-      })),
-    });
+    try {
+      publish(s, {
+        type: "user",
+        text:
+          typeof input.displayPrompt === "string" && input.displayPrompt.trim()
+            ? input.displayPrompt.trim().slice(0, 100000)
+            : prompt,
+        images: images.map(({ name, type, preview }) => ({
+          name,
+          type,
+          preview,
+        })),
+      });
+    } catch (error) {
+      clearRunTimers(run);
+      s.running = false;
+      runs.delete(s.id);
+      throw error;
+    }
     json(res, { ok: true });
     // CCDPH-FIX(F-01): 这两个 promise 是 void 出去的，必须挂上终结 handler ——
     // 任何逃出 finally 的异常都不能变成 unhandledRejection（会杀掉整个进程）。
@@ -4604,6 +5056,8 @@ async function routeSessionDomain(req, res, url, pathname) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "no-referrer",
     });
     const snapshotTail = tailWithinBudget(s.events, SESSION_EVENTS_BYTES_MAX);
     const snapshot = `data: ${JSON.stringify({
@@ -4637,22 +5091,28 @@ async function routeSessionDomain(req, res, url, pathname) {
   }
   if (req.method === "POST" && pathname === "/api/stop") {
     const input = requireObject(await body(req));
-    const run = runs.get(input.sessionId);
-    if (run) {
-      run.abort.abort();
-      // CCDPH-FIX(A10-04): 停止看门狗。SDK 0.3.268 在 provider 停滞（如 TCP 黑洞：
-      // 连接建立后永不应答）时，abortController.abort() 无法解开 runTurn 主循环的
-      // for await —— 实测轮次 75s+ 卡在 running=true、SSE 不 end、重复 stop 无效。
-      // 上游传输层问题应用层无法根治，但必须保证「用户点停止，会话一定在有限时间内
-      // 恢复可用」：5s 后仍未自然收尾（runs 里还是这条）就强制收尾。
-      if (!run.settleWatchdog) {
-        run.settleWatchdog = setTimeout(() => {
-          forceSettleRun(input.sessionId, run, "任务已停止");
-        }, 5000);
-        run.settleWatchdog.unref?.();
+    // CCDPH-FIX(P2-12): 与 /api/send 共用同一把串行队列。此前 stop 不入队，用户"发送后立刻
+    // 停止"时 stop 有机会赶在 send 注册 runs 之前执行 → runs.get 取不到、仍回 {ok:true}，
+    // 任务其实照常运行（"停止失败伪装成功"）。send 的队列块在注册 runs 后立即返回、不 await
+    // 整轮，所以 stop 入队不会阻塞中断能力。
+    return await sessionWriteQueue(async () => {
+      const run = runs.get(input.sessionId);
+      if (run) {
+        run.abort.abort();
+        // CCDPH-FIX(A10-04): 停止看门狗。SDK 0.3.268 在 provider 停滞（如 TCP 黑洞：
+        // 连接建立后永不应答）时，abortController.abort() 无法解开 runTurn 主循环的
+        // for await —— 实测轮次 75s+ 卡在 running=true、SSE 不 end、重复 stop 无效。
+        // 上游传输层问题应用层无法根治，但必须保证「用户点停止，会话一定在有限时间内
+        // 恢复可用」：5s 后仍未自然收尾（runs 里还是这条）就强制收尾。
+        if (!run.settleWatchdog) {
+          run.settleWatchdog = setTimeout(() => {
+            forceSettleRun(input.sessionId, run, "任务已停止");
+          }, 5000);
+          run.settleWatchdog.unref?.();
+        }
       }
-    }
-    return json(res, { ok: true });
+      return json(res, { ok: true });
+    });
   }
   if (req.method === "POST" && pathname === "/api/approve") {
     const input = requireObject(await body(req)),
@@ -4660,7 +5120,7 @@ async function routeSessionDomain(req, res, url, pathname) {
     const pending = runs.get(s.id)?.pending.get(input.requestId);
     if (!pending) throw new Error("这项确认已失效");
     const updatedInput = { ...pending.input };
-    if (pending.tool === "AskUserQuestion" && input.allow) {
+    if (pending.tool === "AskUserQuestion" && input.allow === true) {
       updatedInput.answers = normalizeApprovalAnswers(input.answers);
     }
     publish(s, {
@@ -4705,14 +5165,17 @@ async function route(req, res) {
     const bb = Buffer.from(String(b || ""));
     return ab.length === bb.length && timingSafeEqual(ab, bb);
   };
-  const queryTokenAllowed =
-    (req.method === "GET" &&
-      ["/api/events", "/api/terminal/events"].includes(pathname)) ||
-    (req.method === "POST" && pathname === "/api/terminal/stop");
+  const cookies = Object.fromEntries(
+    String(req.headers.cookie || "")
+      .split(";")
+      .map((part) => part.trim().split("="))
+      .filter(([name, value]) => name && value)
+      .map(([name, ...value]) => [name, value.join("=")]),
+  );
   const authenticated =
     !isApi ||
     safeEq(req.headers["x-workbench-token"], token) ||
-    (queryTokenAllowed && safeEq(url.searchParams.get("token"), token));
+    safeEq(cookies[STREAM_AUTH_COOKIE], streamAuthToken);
   if (!authenticated) {
     if (!allowUnauthenticatedApiRequest(limiterKey)) {
       res.setHeader("Retry-After", "1");
@@ -4724,6 +5187,13 @@ async function route(req, res) {
   if (!rateLimiter(limiterKey)) {
     res.setHeader("Retry-After", "1");
     return json(res, { error: "请求过于频繁，请稍后重试" }, 429);
+  }
+  if (req.method === "POST" && pathname === "/api/auth/session") {
+    res.setHeader(
+      "Set-Cookie",
+      `${STREAM_AUTH_COOKIE}=${streamAuthToken}; HttpOnly; SameSite=Strict; Path=/api`,
+    );
+    return json(res, { ok: true });
   }
   if (req.method === "GET" && pathname === "/api/state")
     return json(res, buildPublicStateSnapshot());
@@ -4740,7 +5210,14 @@ async function route(req, res) {
           url.searchParams.get("projectId"),
           url.searchParams.get("sessionId"),
         );
-    } catch { }
+    } catch (error) {
+      // CCDPH-FIX(P3-35): 原来静默吞掉 —— 传非法/越界 projectId 时会**静默回落到全局范围**
+      //（root=""）并照常返回信息，调用方无错可查。
+      console.warn(
+        "[ccdph] 解析 integrations 的项目根失败，已回落为全局范围:",
+        error?.message || error,
+      );
+    }
     return json(res, await getIntegrationInfo(root));
   }
   if (req.method === "GET" && pathname === "/api/skills") {
@@ -4772,19 +5249,29 @@ async function route(req, res) {
             updatedAt: s.updatedAt,
           }))
         : [];
-      db.settings = nextSettings;
-      if (migrateToCcSwitch) migrateSessionsTo("cc-switch", "");
-      try {
-        await save();
-      } catch (error) {
-        db.settings = previousSettings;
-        for (const before of sessionMetadata) {
-          before.session.providerId = before.providerId;
-          before.session.model = before.model;
-          before.session.updatedAt = before.updatedAt;
-        }
-        throw error;
-      }
+      await withBrowserSettingsTransition({
+        previous: previousSettings.browser,
+        next: nextSettings.browser,
+        reconcile: reconcileBrowserRuntime,
+        commit: async () => {
+          db.settings = nextSettings;
+          if (migrateToCcSwitch) migrateSessionsTo("cc-switch", "");
+          await save();
+        },
+        rollback: async () => {
+          db.settings = previousSettings;
+          for (const before of sessionMetadata) {
+            before.session.providerId = before.providerId;
+            before.session.model = before.model;
+            before.session.updatedAt = before.updatedAt;
+          }
+        },
+        onRollbackError: (error) =>
+          console.error(
+            "[ccdph] 设置回滚后恢复专用浏览器失败:",
+            error?.message || error,
+          ),
+      });
       if (nextSettings.apiMode !== previousSettings.apiMode)
         invalidateProviderUsageCache();
       if (claudeExecutableChanged)
@@ -4792,6 +5279,8 @@ async function route(req, res) {
       return json(res, {
         ...publicSettings(),
         apiAuthConfigured: Boolean(apiTokens[db.settings.activeProfileId]),
+        apiAuthPersistence,
+        apiAuthWarning,
       });
     });
   }
@@ -4801,6 +5290,8 @@ async function route(req, res) {
       mode: db.settings.apiMode,
       activeProfileId: db.settings.activeProfileId || "",
       currency: activeProfileCurrency(),
+      persistence: apiAuthPersistence,
+      warning: apiAuthWarning,
       // CCDPH-FIX(MED-1): 走与 publicSettings() 完全相同的凭据过滤
       profiles: (db.settings.apiProfiles || []).map((p) => ({
         ...publicProfile(p),
@@ -4904,13 +5395,37 @@ async function route(req, res) {
         (p) => p.id === input.id,
       );
       if (!profile) throw new Error("供应商配置不存在");
+      // CCDPH-FIX(P2-7): 先记录可回滚快照。原实现改完 apiMode/activeProfileId、迁移完会话
+      // 才 `await save()`，写盘失败时接口回 400，但本进程已经按新供应商发请求（内存与磁盘不一致）。
+      const beforeActivate = {
+        apiMode: db.settings.apiMode,
+        activeProfileId: db.settings.activeProfileId,
+        sessions: db.sessions.map((s) => ({
+          session: s,
+          providerId: s.providerId,
+          model: s.model,
+          updatedAt: s.updatedAt, // CCDPH-FIX(P3-17b): migrateSessionsTo 也会改 updatedAt
+        })),
+      };
       db.settings.apiMode = "profile";
       db.settings.activeProfileId = profile.id;
       const migrated = migrateSessionsTo(
         profile.id,
         profile.env?.ANTHROPIC_MODEL || "",
       );
-      await save();
+      try {
+        await save();
+      } catch (error) {
+        db.settings.apiMode = beforeActivate.apiMode;
+        db.settings.activeProfileId = beforeActivate.activeProfileId;
+        for (const item of beforeActivate.sessions) {
+          item.session.providerId = item.providerId;
+          item.session.model = item.model;
+          item.session.updatedAt = item.updatedAt;
+        }
+        invalidateProviderUsageCache();
+        throw error;
+      }
       invalidateProviderUsageCache();
       return json(res, {
         ok: true,
@@ -4932,9 +5447,14 @@ async function route(req, res) {
         (p) => p.id === input.id,
       );
       if (!profile) throw new Error("供应商配置不存在");
-      await saveProfileToken(profile.id, input.token.trim());
+      const storage = await saveProfileToken(profile.id, input.token.trim());
       invalidateProviderUsageCache();
-      return { ok: true, hasKey: Boolean(apiTokens[profile.id]) };
+      return {
+        ok: true,
+        hasKey: Boolean(apiTokens[profile.id]),
+        persistent: storage?.persistent === true,
+        warning: apiAuthWarning,
+      };
     });
     return json(res, result);
   }
@@ -4943,6 +5463,8 @@ async function route(req, res) {
     // CCDPH-FIX(LOW-10): 删除同样是「读-改-写 + await」，进同一把串行队列
     const result = await profileWriteQueue(async () => {
       const before = db.settings.apiProfiles || [];
+      const previousActiveProfileId = db.settings.activeProfileId;
+      const previousApiMode = db.settings.apiMode;
       const profile = before.find((p) => p.id === input.id);
       if (!profile) throw new Error("供应商配置不存在");
       db.settings.apiProfiles = before.filter((p) => p.id !== input.id);
@@ -4950,17 +5472,29 @@ async function route(req, res) {
       // 而 api-auth.json 里那份「已删除」的凭据其实还在（对凭据来说这是更糟的 fail-open）。
       const previousToken = apiTokens[profile.id];
       delete apiTokens[profile.id];
+      let authWritten = false;
       try {
         await writeApiAuth();
+        authWritten = true;
+        if (db.settings.activeProfileId === profile.id) {
+          db.settings.activeProfileId = "";
+          db.settings.apiMode = "cc-switch";
+        }
+        await save();
       } catch (error) {
+        db.settings.apiProfiles = before;
+        db.settings.activeProfileId = previousActiveProfileId;
+        db.settings.apiMode = previousApiMode;
         if (previousToken !== undefined) apiTokens[profile.id] = previousToken;
-        throw apiAuthFailure(error, "密钥删除");
+        if (authWritten)
+          await writeApiAuth().catch((rollbackError) =>
+            console.error(
+              "[ccdph] 删除供应商失败后的密钥文件回滚失败:",
+              rollbackError?.message || rollbackError,
+            ),
+          );
+        throw authWritten ? error : apiAuthFailure(error, "密钥删除");
       }
-      if (db.settings.activeProfileId === profile.id) {
-        db.settings.activeProfileId = "";
-        db.settings.apiMode = "cc-switch";
-      }
-      await save();
       invalidateProviderUsageCache();
       return { ok: true };
     });
@@ -5011,6 +5545,9 @@ async function route(req, res) {
 }
 export async function start() {
   await fs.mkdir(DATA, { recursive: true });
+  // 所有启动入口都必须先清扫异常退出残留的专用 Edge。清扫失败时拒绝启动，
+  // 不能让状态显示 attach/disabled 而旧的无鉴权 CDP 端口仍在后台运行。
+  await sweepStaleDedicatedEdge();
   foldedStateBackupPending = null;
   globalHistoryBytes = 0;
   globalHistoryBytesDirty = true;
@@ -5018,6 +5555,11 @@ export async function start() {
     console.warn("[ccdph] 清理异常退出终端失败:", error?.message || error),
   );
   const stateFile = path.join(DATA, "state.json");
+  // CCDPH-FIX(P3-13): 启动时顺带清理过期的 .corrupt-* / .oversize-* 隔离备份
+  //（必须放在 stateFile 定义之后，否则会命中 TDZ）。
+  await cleanupStateQuarantineBackups(stateFile).catch((error) =>
+    console.warn("[ccdph] 清理过期隔离备份失败:", error?.message || error),
+  );
   db = { projects: [], sessions: [], settings: structuredClone(DEFAULT_SETTINGS) };
   // CCDPH-FIX(A10-19): 读路径的**字节前置门**。在任何全量载入/遍历/裁剪判定之前先取文件大小，
   // 便于记录并走「降级载入 + 裁剪」，而不是让超大文件在判定前把内存吃爆。
@@ -5026,7 +5568,16 @@ export async function start() {
   let loadedStateFolded = false;
   try {
     stateFileBytes = (await fs.stat(stateFile)).size;
-  } catch { }
+  } catch (error) {
+    // CCDPH-FIX(P3-26): 只有 ENOENT 是"首次启动/没有数据档"的正常情况。其他错误
+    //（EACCES/EBUSY/EIO）若静默吞掉，stateFileBytes 会保持 0 从而**绕过下面的字节前置门**，
+    // 超大档会在没有体积门的情况下进入全量载入。这里至少留下可查的日志。
+    if (error?.code !== "ENOENT")
+      console.warn(
+        "[ccdph] 读取 state.json 体积失败，本次跳过字节前置门:",
+        error?.message || error,
+      );
+  }
   let oversizedBackup = null;
   if (stateFileBytes > MAX_STATE_BYTES) {
     oversizedBackup = await quarantineOversizedStateFile(
@@ -5151,19 +5702,44 @@ export async function start() {
         "为避免数据丢失，本次不会自动删除任何未归档会话。请先在界面中归档或删除旧会话。",
     );
   await loadApiAuth();
-  if (migrateApiProfiles()) {
-    // CCDPH-FIX(F-05): writeApiAuth() 现在会如实抛出写盘失败（路由据此回 400，不再假报成功）。
-    // 启动阶段不能因为一个密钥文件写不进去就整机起不来 —— 这里记录后继续，调用方语义不变。
-    await writeApiAuth().catch((error) =>
-      console.error("[ccdph] 启动迁移写入密钥失败:", error?.message || error),
-    );
-    await save().catch((error) =>
+  const migratedApiProfiles = migrateApiProfiles();
+  if (migratedApiProfiles || apiAuthNeedsRewrite) {
+    try {
+      await writeApiAuth();
+    } catch (error) {
       console.error(
-        "[ccdph] 启动迁移结果暂未写回，仍将继续启动:",
+        "[ccdph] 旧版密钥迁移失败，正在降级为仅本次运行可用:",
         error?.message || error,
-      ),
-    );
-    invalidateProviderUsageCache();
+      );
+      credentialProtector = null;
+      apiAuthPersistence = "session";
+      apiAuthWarning =
+        "旧版密钥未能写入系统安全存储；本次运行仍可使用，退出后需要重新输入";
+      apiAuthLockedError = "";
+      apiAuthNeedsRewrite = false;
+      try {
+        await fs.rm(API_AUTH_FILE, { force: true });
+      } catch (removeError) {
+        apiTokens = {};
+        apiAuthPersistence = "locked";
+        apiAuthLockedError = "旧版明文密钥无法安全移除";
+        apiAuthWarning =
+          "旧版密钥迁移失败且原文件无法移除；密钥已从内存清空，请检查数据目录权限";
+        console.error(
+          "[ccdph] 无法移除旧版明文密钥文件:",
+          removeError?.message || removeError,
+        );
+      }
+    }
+    if (migratedApiProfiles) {
+      await save().catch((error) =>
+        console.error(
+          "[ccdph] 启动迁移结果暂未写回，仍将继续启动:",
+          error?.message || error,
+        ),
+      );
+      invalidateProviderUsageCache();
+    }
   }
   db.settings.defaultPermissionMode = normalizePermissionMode(
     db.settings.defaultPermissionMode,
@@ -5172,6 +5748,12 @@ export async function start() {
   for (let sessionIndex = 0; sessionIndex < db.sessions.length; sessionIndex += 1) {
     const s = db.sessions[sessionIndex];
     s.engine = "claude";
+    // CCDPH-FIX(P3-14): 载入的 s.model 此前未过 normalizeModel()，被篡改的 state.json 可把
+    // 任意长度/字符的模型名直接交给 SDK 并回写。这里与 /api/send、/api/session/update 同口径。
+    {
+      const normalizedLoadedModel = normalizeModel(s.model);
+      if (normalizedLoadedModel !== null) s.model = normalizedLoadedModel;
+    }
     s.environment ||= "local";
     let linkedProject = null;
     try {
@@ -5324,8 +5906,19 @@ export async function start() {
     res.once("finish", releaseRequest);
     res.once("close", releaseRequest);
     route(req, res).catch((error) => {
-      if (!res.headersSent) json(res, { error: sanitizeError(error) }, 400);
-      else res.end();
+      if (!res.headersSent) {
+        // CCDPH-FIX(P3-33): 此前把**所有**异常都回 400，导致服务端自身的编程错误
+        //（TypeError/ReferenceError/RangeError/SyntaxError）被伪装成"客户端请求有问题"。
+        // 业务校验仍是普通 Error → 保持 400（前端契约不变）；内部错误改为 500 并写 stderr。
+        const internal =
+          error instanceof TypeError ||
+          error instanceof ReferenceError ||
+          error instanceof RangeError ||
+          error instanceof SyntaxError;
+        if (internal)
+          console.error("[ccdph] 内部错误:", error?.stack || error);
+        json(res, { error: sanitizeError(error) }, internal ? 500 : 400);
+      } else res.end();
     });
   });
   server.on("connection", (socket) => {
@@ -5386,7 +5979,8 @@ export async function start() {
     // 现在：每一步各自兜错，退出路径放在 finally 里保证一定执行；真出异常时把
     // shuttingDown 复位，后续信号还能再走一遍。
     try {
-      stopDedicatedEdge();
+      if (!(await stopDedicatedEdge()))
+        console.error("[ccdph] 退出时未能确认专用浏览器进程树已结束");
       await stopRuns().catch((error) =>
         console.error("[ccdph] 退出时收尾失败:", error?.message || error),
       );

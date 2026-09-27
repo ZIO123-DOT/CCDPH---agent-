@@ -228,7 +228,14 @@ export function fitsJsonBudget(
       if (!add(Buffer.byteLength(text ?? "null", "utf8"))) return false;
       continue;
     }
-    if (current.depth > maxDepth || seen.has(item)) return false;
+    if (current.depth > maxDepth) return false;
+    // CCDPH-FIX(P3-23): 原来把"已见过的对象"直接判为 false —— 于是**合法的共享引用（DAG，
+    // 无环）**会被误判为超预算而被截断。这里改为：共享引用按**叶子**计数、不再重复展开
+    //（环引用同样因此终止，不会死循环），只有真正超深/超节点/超字节才返回 false。
+    if (seen.has(item)) {
+      if (!add(2)) return false;
+      continue;
+    }
     seen.add(item);
     nodes += 1;
     if (nodes > maxNodes || !add(2)) return false;

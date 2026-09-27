@@ -19,6 +19,11 @@ function fsRead(p) {
   // 延迟引入，避免顶层 require 语义混乱
   return require("node:fs").readFileSync(p, "utf8");
 }
+let cachedMcpEntry;
+function getMcpEntry() {
+  if (cachedMcpEntry === undefined) cachedMcpEntry = resolveMcpEntry();
+  return cachedMcpEntry;
+}
 
 export function buildPlaywrightMcpConfig(browser) {
   const args = [];
@@ -47,7 +52,7 @@ export function buildPlaywrightMcpConfig(browser) {
   // service.mjs 的直接浏览器执行路径也使用同一语义，改动时需同步确认。
   // CCDPH-FIX(NIT-10): 本地包解析失败时会回退到 npx（需要联网，且 Windows 上依赖 .cmd
   // shim）。原来这条回退路径完全静默，出问题只会表现为「浏览器 MCP 起不来」，这里显式提示。
-  const entry = resolveMcpEntry();
+  const entry = getMcpEntry();
   if (entry) {
     // 用本地包跑 MCP（离线可用）。process.execPath 在打包版是 CCDPH.exe，
     // 但 Electron 会以「主进程」身份执行该脚本，而 cli.js 是纯 Node CLI，

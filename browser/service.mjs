@@ -14,6 +14,13 @@ import { probeCdp, probeTabs } from "./detect.mjs";
 const DATA_DIR =
   process.env.WORKBENCH_DATA_DIR ||
   path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".data"));
+const WINDOWS_SYSTEM32 = path.join(
+  process.env.SystemRoot || "C:\\Windows",
+  "System32",
+);
+const TASKKILL_EXE = path.join(WINDOWS_SYSTEM32, "taskkill.exe");
+const TASKLIST_EXE = path.join(WINDOWS_SYSTEM32, "tasklist.exe");
+const NETSTAT_EXE = path.join(WINDOWS_SYSTEM32, "netstat.exe");
 
 let playwrightMod = null;
 function pw() {
@@ -27,6 +34,8 @@ function pw() {
 const state = {
   connection: null, // { browser, cdpEndpoint, connectedAt }
 };
+let connectingPromise = null;
+let connectingCdpEndpoint = "";
 const SCREENSHOT_TOTAL_MAX_BYTES = 256 * 1024 * 1024;
 
 
@@ -45,12 +54,18 @@ export async function cdpEndpointFromSettings(browserSettings) {
     );
     try {
       const st = await fs.promises.stat(file);
-      if (st.mtimeMs === _cachedCdpPort.mtime && _cachedCdpPort.port > 0)
+      // CCDPH-FIX(P3-14): 只比 mtime 会在"新端口写回同一 mtime 分辨率"时命中**旧缓存**，
+      // 返回已失效的端口。加上文件大小作为次级判据（端口位数变化会改变长度）。
+      if (
+        st.mtimeMs === _cachedCdpPort.mtime &&
+        st.size === _cachedCdpPort.size &&
+        _cachedCdpPort.port > 0
+      )
         return `http://127.0.0.1:${_cachedCdpPort.port}`;
       const text = await fs.promises.readFile(file, "utf8");
       const port = Number.parseInt(text.trim().split(/\r?\n/)[0], 10);
       if (Number.isInteger(port) && port > 0) {
-        _cachedCdpPort = { port, mtime: st.mtimeMs };
+        _cachedCdpPort = { port, mtime: st.mtimeMs, size: st.size };
         return `http://127.0.0.1:${port}`;
       }
     } catch { }
@@ -73,6 +88,7 @@ async function dropConnection() {
 async function ensureConnection(browserSettings) {
   const cdp = await cdpEndpointFromSettings(browserSettings);
   if (!cdp) {
+    if (connectingPromise) await connectingPromise.catch(() => {});
     await dropConnection();
     return { ok: false, error: "浏览器能力未启用，或 Edge 尚未授权远程调试（请在 edge://inspect/#remote-debugging 勾选允许）" };
   }
@@ -85,11 +101,28 @@ async function ensureConnection(browserSettings) {
       await dropConnection();
     }
   }
-  await dropConnection();
-  const chromium = (await pw()).chromium;
-  const browser = await chromium.connectOverCDP(cdp, { timeout: 8000 });
-  state.connection = { browser, cdpEndpoint: cdp, connectedAt: Date.now() };
-  return { ok: true, cdp };
+  if (connectingPromise) {
+    if (connectingCdpEndpoint === cdp) return connectingPromise;
+    await connectingPromise.catch(() => {});
+    return ensureConnection(browserSettings);
+  }
+  const attempt = (async () => {
+    await dropConnection();
+    const chromium = (await pw()).chromium;
+    const browser = await chromium.connectOverCDP(cdp, { timeout: 8000 });
+    state.connection = { browser, cdpEndpoint: cdp, connectedAt: Date.now() };
+    return { ok: true, cdp };
+  })();
+  connectingPromise = attempt;
+  connectingCdpEndpoint = cdp;
+  try {
+    return await attempt;
+  } finally {
+    if (connectingPromise === attempt) {
+      connectingPromise = null;
+      connectingCdpEndpoint = "";
+    }
+  }
 }
 
 export async function browserStatus(browserSettings) {
@@ -101,7 +134,7 @@ export async function browserStatus(browserSettings) {
   if (dedicatedLaunchError) info.launchError = dedicatedLaunchError;
   if (!conn.ok) return info;
   try {
-    const cdp = state.connection.cdpEndpoint;
+    const cdp = conn.cdp;
     const port = Number(new URL(cdp).port) || 80;
     info.port = port;
     const tabs = await probeTabs(port);
@@ -116,6 +149,7 @@ export { probeCdp, probeTabs };
 
 // dedicated 模式：拉起独立 Edge（非默认 user-data-dir，规避 136 限制）
 let dedicatedEdgeProc = null;
+let dedicatedEdgeConfig = null;
 // CCDPH-FIX(BR-6): 最近一次「专用浏览器」启动失败 / 被拒绝的原因。由 browserStatus() 带出
 // （见上面 launchError），这样 /api/browser/enable 能把它交给设置页，而不是静默失败。
 let dedicatedLaunchError = "";
@@ -123,6 +157,12 @@ let dedicatedLaunchError = "";
 // 时收尾代码不会执行，这个文件就是下次启动唯一能定位「残留实例」的线索 —— 残留实例带着
 // 登录态和一个**无鉴权**的 --remote-debugging-port 一直留在机器上。
 const DEDICATED_PID_FILE = () => path.join(DATA_DIR, "browser", "dedicated-edge.json");
+function staleDedicatedEdgeRecoveryHint(pid = 0) {
+  const processHint = Number.isInteger(Number(pid)) && Number(pid) > 0
+    ? `请先在任务管理器结束 PID ${Number(pid)} 的 msedge.exe，`
+    : "请先在任务管理器结束 CCDPH 专用的 msedge.exe，";
+  return `${processHint}确认调试端口已关闭后，再删除标记文件并重试：${DEDICATED_PID_FILE()}。不要只删除标记而保留浏览器进程。`;
+}
 // CCDPH-FIX(BR-10): 只有带这个标记文件的目录才被认作 CCDPH 自己的浏览器配置目录。
 const PROFILE_MARKER = ".ccdph-browser-profile";
 
@@ -142,25 +182,63 @@ function killProcessTree(pid) {
     const guard = setTimeout(() => finish(false), 8000);
     let killer;
     try {
-      killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      killer = spawn(TASKKILL_EXE, ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     } catch {
       return finish(false);
     }
     killer.on("error", () => finish(false));
-    killer.on("close", () => finish(true));
+    // CCDPH-FIX(P3-16b): taskkill 非 0 退出**不等于没杀掉** —— 目标可能在这之前就自己退出了
+    //（"process not found" 通常回 128）。原来一律 finish(false)，于是 sweepStaleDedicatedEdge
+    // 会把"已经消失的残留"误判为清理失败并**抛错拒绝启动**，launchDedicatedEdge 也会因此拒绝
+    // 启用浏览器。这里在非 0 退出后复核"进程是否仍存在"：已不存在即视为成功。
+    killer.on("close", (code) => {
+      if (code === 0) return finish(true);
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return finish(true); // 进程已不存在 —— 目的达成
+      }
+      finish(false);
+    });
+  });
+}
+
+function waitForProcessExit(proc, timeout = 3000) {
+  if (!proc || proc.exitCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      proc.removeListener("exit", onExit);
+      resolve(value);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(proc.exitCode !== null), timeout);
+    timer.unref?.();
+    proc.once("exit", onExit);
   });
 }
 
 // ---- CCDPH-FIX(BR-5)(BR-10): 专用浏览器进程的 pid 标记 / 配置目录包含性校验 ----
 function writeDedicatedPidMarker(pid, profileDir, port) {
-  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  const markerFile = DEDICATED_PID_FILE();
+  const temporaryFile = `${markerFile}.${pid}.tmp`;
   try {
-    fs.mkdirSync(path.dirname(DEDICATED_PID_FILE()), { recursive: true });
+    fs.mkdirSync(path.dirname(markerFile), { recursive: true });
     fs.writeFileSync(
-      DEDICATED_PID_FILE(),
+      temporaryFile,
       JSON.stringify({ pid, profileDir: String(profileDir || ""), port: Number(port) || 0, ts: Date.now() }),
     );
-  } catch { }
+    fs.renameSync(temporaryFile, markerFile);
+    return true;
+  } catch (error) {
+    try { fs.rmSync(temporaryFile, { force: true }); } catch { }
+    console.error("[ccdph] 写入专用浏览器 PID 标记失败:", error?.message || error);
+    return false;
+  }
 }
 // 只清理「属于这个 pid」的标记：pid 可能已被系统复用给别的进程，不能误删别人的记录
 function clearDedicatedPidMarker(pid) {
@@ -241,25 +319,46 @@ export function matchesDedicatedEdgeIdentity(tasklistOutput, netstatOutput, pid,
     });
 }
 
+function matchesDedicatedEdgeTask(tasklistOutput, pid) {
+  const expectedPid = String(Number(pid));
+  const taskLine = String(tasklistOutput || "")
+    .split(/\r?\n/)
+    .find((line) => line.trim());
+  const taskMatch = taskLine?.match(/^\s*"?([^",]+)"?\s*,\s*"?(\d+)"?/);
+  return Boolean(
+    taskMatch &&
+      /^msedge\.exe$/i.test(taskMatch[1]) &&
+      taskMatch[2] === expectedPid,
+  );
+}
+
 // 名称只能证明「现在是 Edge」，还不足以证明是 CCDPH 拉起的那一棵。再核对标记中的
 // 专用调试端口确实由同一个 PID 监听，避免 PID 被另一个普通 Edge 复用时误杀。
 async function isDedicatedEdgeProcess(pid, port) {
-  if (!Number.isInteger(Number(port)) || Number(port) <= 0) return false;
+  if (!Number.isInteger(Number(port)) || Number(port) <= 0)
+    return { status: "unverifiable", reason: "PID 标记中的端口无效" };
   const [tasklist, netstat] = await Promise.all([
-    captureWindowsCommand("tasklist", [
+    captureWindowsCommand(TASKLIST_EXE, [
       "/FI",
       `PID eq ${pid}`,
       "/FO",
       "CSV",
       "/NH",
     ]),
-    captureWindowsCommand("netstat", ["-ano", "-p", "tcp"], 5000),
+    captureWindowsCommand(NETSTAT_EXE, ["-ano", "-p", "tcp"], 5000),
   ]);
-  return (
-    tasklist.ok &&
-    netstat.ok &&
-    matchesDedicatedEdgeIdentity(tasklist.out, netstat.out, pid, port)
-  );
+  if (!tasklist.ok || !netstat.ok)
+    return {
+      status: "unverifiable",
+      reason: "无法调用 tasklist/netstat 核验残留浏览器身份",
+    };
+  if (!matchesDedicatedEdgeTask(tasklist.out, pid)) return { status: "mismatch" };
+  if (matchesDedicatedEdgeIdentity(tasklist.out, netstat.out, pid, port))
+    return { status: "match" };
+  return {
+    status: "unverifiable",
+    reason: "残留 PID 仍是 Edge，但调试端口尚未就绪或无法确认归属",
+  };
 }
 
 // CCDPH-FIX(BR-10): profileDir 来自设置，而 server.mjs 只对它做了 trim + 长度截断就直接
@@ -348,12 +447,31 @@ async function verifyDedicatedLaunch(proc, port) {
   console.error("[ccdph]", dedicatedLaunchError);
 }
 
-export function launchDedicatedEdge(msedgePath, port, profileDir) {
-  if (dedicatedEdgeProc && !dedicatedEdgeProc.killed) return dedicatedEdgeProc;
+export async function launchDedicatedEdge(msedgePath, port, profileDir) {
   dedicatedLaunchError = "";
   // CCDPH-FIX(BR-10): 先过包含性校验，不通过就直接拒绝启动（不再 mkdir 任意路径）
   const resolvedProfile = resolveDedicatedProfileDir(profileDir);
   if (!resolvedProfile) return null;
+  const current = dedicatedEdgeState();
+  if (current) {
+    const samePort = current.port === Number(port);
+    const sameProfile =
+      process.platform === "win32"
+        ? path.resolve(current.profileDir).toLowerCase() ===
+          path.resolve(resolvedProfile).toLowerCase()
+        : path.resolve(current.profileDir) === path.resolve(resolvedProfile);
+    if (samePort && sameProfile) return dedicatedEdgeProc;
+    if (!(await stopDedicatedEdge())) {
+      dedicatedLaunchError =
+        "现有专用浏览器参数与新设置不一致，且无法可靠结束旧进程；已拒绝复用旧端口";
+      return null;
+    }
+  } else if (dedicatedEdgeProc && !dedicatedEdgeProc.killed) {
+    if (!(await stopDedicatedEdge())) {
+      dedicatedLaunchError = "专用浏览器运行状态不完整，无法安全重启";
+      return null;
+    }
+  }
   let proc;
   try {
     proc = spawn(msedgePath, [
@@ -377,20 +495,55 @@ export function launchDedicatedEdge(msedgePath, port, profileDir) {
     return null;
   }
   dedicatedEdgeProc = proc;
+  dedicatedEdgeConfig = {
+    pid: proc.pid,
+    port: Number(port),
+    profileDir: resolvedProfile,
+  };
   const launchedAt = Date.now();
-  writeDedicatedPidMarker(proc.pid, resolvedProfile, port);
+  if (!writeDedicatedPidMarker(proc.pid, resolvedProfile, port)) {
+    dedicatedLaunchError =
+      "无法可靠记录专用浏览器进程，已取消启动以避免异常退出后遗留无鉴权调试端口";
+    const clearUnmarkedProcess = () => {
+      if (dedicatedEdgeProc === proc) {
+        dedicatedEdgeProc = null;
+        dedicatedEdgeConfig = null;
+      }
+    };
+    proc.once("error", clearUnmarkedProcess);
+    let killed = await killProcessTree(proc.pid);
+    if (!killed) {
+      try { proc.kill(); } catch { }
+      killed = await waitForProcessExit(proc);
+    }
+    if (killed) {
+      clearUnmarkedProcess();
+      proc.unref();
+      return null;
+    }
+    proc.once("exit", clearUnmarkedProcess);
+    throw new Error(
+      "无法记录且无法确认结束专用浏览器；进程仍在当前运行期受跟踪，已拒绝提交设置",
+    );
+  }
   // CCDPH-FIX(BR-6): spawn 的失败（ENOENT/EACCES，Edge 被删/改名/被安全软件拦）是**异步**通过
   // 'error' 事件报出来的。原来只挂了 'exit'，没有 'error' 监听 → 未捕获异常直接打死整个
   // Electron 主进程（server.mjs 就跑在里面，所有会话一起没）。这里与 killProcessTree 的
   // killer.on("error") 保持一致，并把原因记下来交给 browserStatus()。
   proc.on("error", (error) => {
-    if (dedicatedEdgeProc === proc) dedicatedEdgeProc = null;
+    if (dedicatedEdgeProc === proc) {
+      dedicatedEdgeProc = null;
+      dedicatedEdgeConfig = null;
+    }
     dedicatedLaunchError = `无法启动专用浏览器（${error?.code || "spawn 失败"}）：${String(error?.message || "").slice(0, 200)}`;
     console.error("[ccdph]", dedicatedLaunchError);
     clearDedicatedPidMarker(proc.pid);
   });
   proc.on("exit", () => {
-    if (dedicatedEdgeProc === proc) dedicatedEdgeProc = null;
+    if (dedicatedEdgeProc === proc) {
+      dedicatedEdgeProc = null;
+      dedicatedEdgeConfig = null;
+    }
     clearDedicatedPidMarker(proc.pid);
     // CCDPH-FIX(BR-6): 启动后立刻退出，通常意味着「已经有一个使用同一 profileDir 的实例在跑，
     // 这次 spawn 只是把命令行转发给旧实例然后自己退出」。旧实例监听的是**旧端口**，
@@ -404,34 +557,69 @@ export function launchDedicatedEdge(msedgePath, port, profileDir) {
   void verifyDedicatedLaunch(proc, port).catch(() => { });
   return proc;
 }
-export function stopDedicatedEdge() {
+export function dedicatedEdgeState() {
+  if (
+    !dedicatedEdgeProc ||
+    dedicatedEdgeProc.killed ||
+    dedicatedEdgeProc.exitCode !== null ||
+    !dedicatedEdgeConfig
+  )
+    return null;
+  return { ...dedicatedEdgeConfig };
+}
+export async function stopDedicatedEdge() {
   const proc = dedicatedEdgeProc;
-  dedicatedEdgeProc = null;
-  if (!proc || proc.killed) return Promise.resolve(false);
+  if (!proc) return true;
+  if (proc.killed || proc.exitCode !== null) {
+    if (dedicatedEdgeProc === proc) {
+      dedicatedEdgeProc = null;
+      dedicatedEdgeConfig = null;
+    }
+    return true;
+  }
   const pid = proc.pid;
-  try { proc.kill(); } catch { }
-  // CCDPH-FIX(BR-5): 单进程 kill() 之后再用 taskkill /T /F 清掉它的子进程
+  // CCDPH-FIX(P3-16): 直接 `taskkill /T /F` 前先核验身份 —— PID 可能已被系统复用给无关
+  // 进程，那时整树强杀会误伤。只有确认"现在这个 PID 已经不是 msedge"才跳过杀进程
+  //（仍清理状态与标记）；"unverifiable"（tasklist/netstat 不可用、端口未就绪）仍按原样尝试收尾。
+  const identity = await isDedicatedEdgeProcess(pid, dedicatedEdgeConfig?.port);
+  if (identity.status === "mismatch") {
+    if (dedicatedEdgeProc === proc) {
+      dedicatedEdgeProc = null;
+      dedicatedEdgeConfig = null;
+    }
+    clearDedicatedPidMarker(pid);
+    return true;
+  }
+  const killed = await killProcessTree(pid);
+  if (!killed) return false;
+  if (dedicatedEdgeProc === proc) {
+    dedicatedEdgeProc = null;
+    dedicatedEdgeConfig = null;
+  }
   clearDedicatedPidMarker(pid);
-  return killProcessTree(pid);
+  return true;
 }
 
 // CCDPH-FIX(BR-5): 启动时的残留清扫。上一次运行如果是崩溃 / 被任务管理器强杀 / 关机，
 // 退出流程没机会执行，专有 Edge（带着登录态的 profile + 无鉴权的调试端口）会一直活着。
 // 这里按 pid 标记文件把它整棵进程树收掉；确认过 pid 现在还确实是 msedge.exe 才会动手。
-// 永不 reject：调用方（desktop.cjs 启动流程）只 await，不需要处理异常。
+// fail-closed：标记损坏、身份不可核验或进程树无法结束时会抛错，由 server.start()
+// 拒绝启动并把标记路径与安全恢复步骤交给用户，不能静默放过无鉴权 CDP 端口。
 export async function sweepStaleDedicatedEdge() {
   let saved = null;
   try {
     saved = JSON.parse(fs.readFileSync(DEDICATED_PID_FILE(), "utf8"));
-  } catch {
-    // 损坏标记若不删除，每次启动都会永远重复走失败分支。
-    removeDedicatedPidMarker();
-    return false;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw new Error(
+      `专用浏览器 PID 标记无法解析，已保留原文件并拒绝启动：${error?.message || error}。${staleDedicatedEdgeRecoveryHint()}`,
+    );
   }
   const pid = Number(saved?.pid);
   if (!Number.isInteger(pid) || pid <= 0) {
-    removeDedicatedPidMarker();
-    return false;
+    throw new Error(
+      `专用浏览器 PID 标记内容无效，已保留原文件并拒绝启动。${staleDedicatedEdgeRecoveryHint()}`,
+    );
   }
   let alive = true;
   try {
@@ -440,15 +628,29 @@ export async function sweepStaleDedicatedEdge() {
     // EPERM：进程存在但不属于我们，仍然需要 tasklist 复核后再决定
     alive = error?.code === "EPERM";
   }
-  if (!alive || !(await isDedicatedEdgeProcess(pid, Number(saved?.port)))) {
+  if (!alive) {
+    clearDedicatedPidMarker(pid);
+    return false;
+  }
+  const identity = await isDedicatedEdgeProcess(pid, Number(saved?.port));
+  if (identity.status === "unverifiable")
+    throw new Error(
+      `${identity.reason}；PID 标记已保留，为避免遗留无鉴权 CDP 端口已拒绝启动。${staleDedicatedEdgeRecoveryHint(pid)}`,
+    );
+  if (identity.status === "mismatch") {
     clearDedicatedPidMarker(pid);
     return false;
   }
   console.warn(`[ccdph] 发现上次退出残留的专用浏览器（pid ${pid}），正在结束它`);
   dedicatedEdgeProc = null;
+  dedicatedEdgeConfig = null;
   const killed = await killProcessTree(pid);
+  if (!killed)
+    throw new Error(
+      `无法结束残留的专用浏览器（pid ${pid}）；PID 标记已保留，下次启动会继续重试。${staleDedicatedEdgeRecoveryHint(pid)}`,
+    );
   clearDedicatedPidMarker(pid);
-  return killed;
+  return true;
 }
 
 // CCDPH-FIX(BUG-4): 截图目录清理（启动时由 server.mjs 调用一次）。

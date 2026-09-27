@@ -8,6 +8,7 @@ export function createIntegrationRoute(deps) {
     body,
     browserStatus,
     cdpEndpointFromSettings,
+    commitBrowserSettings,
     detectBrowsers,
     getDb,
     getExternalOpener,
@@ -15,7 +16,6 @@ export function createIntegrationRoute(deps) {
     hooksWriteQueue,
     isValidPort,
     json,
-    launchDedicatedEdge,
     mcpWriteQueue,
     readJsonFile,
     readMcpDoc,
@@ -23,11 +23,9 @@ export function createIntegrationRoute(deps) {
     requireObject,
     restoreRedactedHookCommands,
     sanitizeMcpEntry,
-    save,
     serializeHooks,
     settingsJsonPath,
     settingsWriteQueue,
-    stopDedicatedEdge,
     validateHookItem,
     validateHooksStructure,
     workspaceRoot,
@@ -80,38 +78,18 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
         .filter((s) => typeof s === "string")
         .map((s) => s.trim().slice(0, 200))
         .slice(0, 50);
-    const previousBrowser = db.settings.browser;
-    let launchedDedicated = false;
-    // dedicated 模式先完成可失败的检测与启动，再提交设置事务。
     if (mode === "dedicated") {
-      const msedge = (await detectBrowsers()).browsers.find((b) => b.kind === "edge")?.path;
-      if (!msedge) throw new Error("本机未找到 Edge，无法启动专用授权浏览器");
       const profileDir = next.profileDir || path.join(DATA, "browser-profile");
       next.profileDir = profileDir;
-      const launched = launchDedicatedEdge(msedge, next.dedicatedPort, profileDir);
-      if (!launched) {
-        const failed = await browserStatus(next);
-        throw new Error(failed.launchError || "专用浏览器启动失败");
-      }
-      launchedDedicated = true;
     }
-    db.settings.browser = next;
-    try {
-      await save();
-    } catch (error) {
-      db.settings.browser = previousBrowser;
-      if (launchedDedicated) await stopDedicatedEdge().catch(() => { });
-      throw error;
-    }
+    await commitBrowserSettings(next);
       const status = await browserStatus(db.settings.browser);
       return json(res, { ok: true, browser: status });
     });
   }
   if (req.method === "POST" && pathname === "/api/browser/disable") {
     return await settingsWriteQueue(async () => {
-      db.settings.browser.enabled = false;
-      await save();
-      stopDedicatedEdge();
+      await commitBrowserSettings({ ...db.settings.browser, enabled: false });
       return json(res, { ok: true });
     });
   }
@@ -140,9 +118,12 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
     }
     return await settingsWriteQueue(async () => {
       const profileDir = db.settings.browser.profileDir || path.join(DATA, "browser-profile");
-      db.settings.browser.profileDir = profileDir;
-      await save();
-      launchDedicatedEdge(msedge, db.settings.browser.dedicatedPort, profileDir);
+      await commitBrowserSettings({
+        ...db.settings.browser,
+        enabled: true,
+        mode: "dedicated",
+        profileDir,
+      });
       return json(res, { ok: true, hint: "专用授权浏览器已启动，请在其中登录你需要的网站（登录态长期保留）" });
     });
   }
@@ -167,6 +148,8 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
         `http://127.0.0.1:${port}/json/close/${encodeURIComponent(input.targetId)}`,
         { signal: AbortSignal.timeout(5000) },
       );
+      // CCDPH-FIX(P3-21): 不消费响应体时套接字会滞留到超时/GC。这里读掉（丢弃内容）。
+      await res2.text().catch(() => "");
     } catch (error) {
       closeError =
         error?.name === "TimeoutError"
@@ -180,10 +163,10 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
   }
   // ---- MCP 服务器管理：读写 ~/.claude.json 的 mcpServers（Claude Code 用户级标准配置） ----
   if (req.method === "GET" && pathname === "/api/mcp-servers") {
-    const root = workspaceRoot(
-      url.searchParams.get("projectId"),
-      url.searchParams.get("sessionId"),
-    );
+    const projectId = url.searchParams.get("projectId");
+    const root = projectId
+      ? workspaceRoot(projectId, url.searchParams.get("sessionId"))
+      : "";
     const [doc, projectMcp] = await Promise.all([
       readMcpDoc(),
       root ? readJsonFile(path.join(root, ".mcp.json")) : {},
@@ -216,6 +199,13 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
   if (req.method === "POST" && pathname === "/api/mcp-servers/save") {
     const input = requireObject(await body(req));
     const name = String(input.name || "").trim();
+    // CCDPH-FIX(P2-1): save 分支此前**没有**名称校验（delete 分支 F-10 有），于是
+    // name:"__proto__" 会走 `doc.mcpServers["__proto__"] = entry` 的原型 setter ——
+    // 条目不落盘却回 {ok:true}（失败伪装成功），并临时改写该对象的原型。
+    // 这里与 delete 分支使用同一正则（首个字符必须是字母数字 → "__proto__"/"constructor"
+    // 这类原型相关名一律拒绝）。
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name))
+      throw new Error("MCP 名称只能是字母数字与 .-_（≤64 字符）");
     const entry = sanitizeMcpEntry(input);
     // B-03 修复：整段「读-改-写」进 mcpWriteQueue 串行化（原来无锁，60 并发只落盘 1 条）。
     await mcpWriteQueue(async () => {
@@ -223,7 +213,10 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       doc.mcpServers = doc.mcpServers && typeof doc.mcpServers === "object" ? doc.mcpServers : {};
       // CCDPH-FIX(F13): 前端为安全起见不回显密钥，编辑已存在的条目时不会提交 env/headers。
       // 原实现直接整体替换，导致用户一改命令就把原有密钥/鉴权头静默抹掉。
-      const existing = doc.mcpServers[name] || {};
+      // CCDPH-FIX(P2-1): 只认自有属性，避免 name 命中原型链（如 "constructor"）时拿到继承值。
+      const existing = Object.hasOwn(doc.mcpServers, name)
+        ? doc.mcpServers[name] || {}
+        : {};
       if (!entry.env && existing.env) entry.env = existing.env;
       if (!entry.headers && existing.headers) entry.headers = existing.headers;
       doc.mcpServers[name] = entry;
@@ -344,6 +337,19 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
           if (!Number.isInteger(index) || index < 0 || index >= list.length)
             throw new Error("要更新的 Hook 不存在");
           const existing = list[index];
+          const restoreUpdateCandidate = (candidate) => {
+            const candidateList = [...list];
+            candidateList[index] = candidate;
+            const restored = restoreRedactedHookCommands(
+              { [event]: candidateList },
+              { [event]: list },
+            );
+            if (restored.unresolved.length)
+              throw new Error(
+                `提交的 Hook 命令包含无法对应原值的脱敏副本（${restored.unresolved.join("、")}），已拒绝更新`,
+              );
+            return candidateList[index];
+          };
           const matcher =
             input.matcher === undefined ? existing?.matcher ?? "" : input.matcher;
           const command =
@@ -354,21 +360,30 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
             if (!preserved.length) throw new Error("Hook 命令不能为空");
             list[index] = { ...existing, matcher: String(matcher) };
           } else if (Array.isArray(input.hooks)) {
-            // 前端整体提交 hooks 数组时按其内容写入。
-            list[index] = validateHookItem(
+            // 高级调用方整体提交 hooks 数组时，同样必须恢复/拒绝 GET 接口产生的脱敏副本。
+            const candidate = validateHookItem(
               { ...existing, matcher, hooks: input.hooks },
               event,
             );
+            list[index] = restoreUpdateCandidate(candidate);
           } else {
             // CCDPH-FIX: 只替换 hooks[0]，同 matcher 下的兄弟命令原样保留。
             // 原实现用 [{ type, command }] 重建整个 hooks 数组，会把 hooks[1..] 静默丢掉。
+            // CCDPH-FIX(P3-27): 原来硬编码 `type: "command"`，会把用户原有的
+            // `type:"prompt"` 等 hook 静默改写。这里保留原条目的 type。
+            const originalType =
+              typeof existing?.hooks?.[0]?.type === "string"
+                ? existing.hooks[0].type
+                : "command";
             const nextHooks = [
-              { type: "command", command },
+              { type: originalType, command },
               ...(Array.isArray(existing?.hooks) ? existing.hooks.slice(1) : []),
             ];
-            list[index] = validateHookItem(
-              { ...existing, matcher, hooks: nextHooks },
-              event,
+            list[index] = restoreUpdateCandidate(
+              validateHookItem(
+                { ...existing, matcher, hooks: nextHooks },
+                event,
+              ),
             );
           }
         } else {

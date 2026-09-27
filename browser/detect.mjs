@@ -5,18 +5,23 @@ import os from "node:os";
 import path from "node:path";
 import net from "node:net";
 
+// CCDPH-FIX(P3-24): 原来用 `|| ""` 兜底，环境变量缺失时会拼出**相对路径**
+// （如 `Microsoft\Edge\Application\msedge.exe`）→ `existsSync` 会去 cwd 下探测同名文件。
+// 这里在环境变量为空时直接产出空串，交由 firstExisting 跳过。
+const envPath = (variable, rest) =>
+  process.env[variable] ? path.join(process.env[variable], rest) : "";
 const EDGE_PATHS = [
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
   "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  path.join(process.env["ProgramFiles(x86)"] || "", "Microsoft\\Edge\\Application\\msedge.exe"),
-  path.join(process.env["ProgramFiles"] || "", "Microsoft\\Edge\\Application\\msedge.exe"),
+  envPath("ProgramFiles(x86)", "Microsoft\\Edge\\Application\\msedge.exe"),
+  envPath("ProgramFiles", "Microsoft\\Edge\\Application\\msedge.exe"),
 ];
 const CHROME_PATHS = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-  path.join(process.env["ProgramFiles"] || "", "Google\\Chrome\\Application\\chrome.exe"),
-  path.join(process.env["ProgramFiles(x86)"] || "", "Google\\Chrome\\Application\\chrome.exe"),
-  path.join(process.env.LOCALAPPDATA || "", "Google\\Chrome\\Application\\chrome.exe"),
+  envPath("ProgramFiles", "Google\\Chrome\\Application\\chrome.exe"),
+  envPath("ProgramFiles(x86)", "Google\\Chrome\\Application\\chrome.exe"),
+  envPath("LOCALAPPDATA", "Google\\Chrome\\Application\\chrome.exe"),
 ];
 
 function firstExisting(paths) {

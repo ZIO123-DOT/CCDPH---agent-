@@ -4,6 +4,7 @@ import {
   clipTail,
   escapeHtml,
   highlightCode,
+  MARKDOWN_FALLBACK_LIMIT,
   markdown,
   truncateForDisplay,
 } from "/markdown-renderer.js";
@@ -16,11 +17,43 @@ import { stripAnsi } from "/terminal-text.js";
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
-const token =
-  location.hash.slice(1) || sessionStorage.getItem("workbench-token") || "";
-sessionStorage.setItem("workbench-token", token);
+let bootstrapToken = location.hash.slice(1);
 history.replaceState(null, "", location.pathname);
-const api = createApiClient(token);
+let sessionAuthPromise = null;
+let reauthenticationPromise = null;
+function ensureSessionAuth() {
+  if (!sessionAuthPromise) {
+    sessionAuthPromise = api("auth/session", {}, { retryUnauthorized: false })
+      .then((result) => {
+        bootstrapToken = "";
+        return result;
+      })
+      .catch((error) => {
+        sessionAuthPromise = null;
+        throw error;
+      });
+  }
+  return sessionAuthPromise;
+}
+async function recoverSessionAuth() {
+  if (!reauthenticationPromise) {
+    sessionAuthPromise = null;
+    reauthenticationPromise = ensureSessionAuth()
+      .then(() => true)
+      .catch((error) => {
+        console.error("本地服务会话重新鉴权失败", error);
+        toast("本地服务会话已失效，请退出并重新打开 CCDPH");
+        return false;
+      })
+      .finally(() => {
+        reauthenticationPromise = null;
+      });
+  }
+  return reauthenticationPromise;
+}
+const api = createApiClient(() => bootstrapToken, {
+  onUnauthorized: recoverSessionAuth,
+});
 
 const IS_ELECTRON = /Electron/i.test(navigator.userAgent);
 document.body.classList.toggle("electron", IS_ELECTRON);
@@ -74,6 +107,7 @@ const state = {
   commandIndex: 0,
   commandMode: "all",
 };
+let lastApiAuthWarning = "";
 const UNSUPPORTED_SETTINGS = new Set([
   "import",
   "profile",
@@ -106,6 +140,14 @@ const el = (tag, className, text) => {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+};
+// CCDPH-FIX(P3-30): 对一个已处于 open 状态的 <dialog> 再调 showModal() 会抛
+// InvalidStateError（连续预览 / 连续打开设置会命中），异常经 action() 原样冒成 toast。
+// 统一走这个幂等入口。
+const openDialog = (selector) => {
+  const dialog = $(selector);
+  if (dialog && !dialog.open) dialog.showModal();
+  return dialog;
 };
 function toast(text) {
   $("#toast").textContent = text;
@@ -380,13 +422,24 @@ systemTheme.addEventListener("change", handleSystemThemeChange);
 applyTheme();
 applyAppearanceSettings();
 
+let stateRefreshSeq = 0;
+let stateRefreshApplied = 0;
 async function refreshState() {
+  const seq = ++stateRefreshSeq;
   const data = await api("state");
+  if (seq < stateRefreshApplied) return data;
+  stateRefreshApplied = seq;
   state.runtime = data;
   state.projects = data.projects || [];
   state.sessions = data.sessions || [];
   state.settings = data.settings || {};
   state.apiAuthConfigured = data.apiAuthConfigured === true;
+  state.apiAuthPersistence = data.apiAuthPersistence || "encrypted";
+  state.apiAuthWarning = data.apiAuthWarning || "";
+  if (state.apiAuthWarning && state.apiAuthWarning !== lastApiAuthWarning) {
+    lastApiAuthWarning = state.apiAuthWarning;
+    toast(state.apiAuthWarning);
+  }
   if (!activeProject()) state.projectId = state.projects[0]?.id || null;
   $("#connection").textContent = data.claude.error
     ? "Claude Code 未连接"
@@ -442,10 +495,12 @@ async function refreshIntegrations() {
     })
     .catch((error) => {
       state.integrations = {
-        mcpCount: 0,
-        skillCount: 0,
-        hookCount: 0,
-        pluginCount: 0,
+        // CCDPH-FIX(P3-34): 不再伪造成 0（会让设置页显示"0 个已配置"，把扫描失败
+        // 说成"什么都没配"）。null 会经 ?? "—" 显示为破折号。
+        mcpCount: null,
+        skillCount: null,
+        hookCount: null,
+        pluginCount: null,
         configDir: `扫描失败：${error.message}`,
       };
       renderSettingsDiagnostics();
@@ -749,6 +804,7 @@ async function ensureSession() {
   });
   if (revision !== navigationRevision) return null;
   await refreshState();
+  if (revision !== navigationRevision) return null;
   state.sessionId = session.id;
   state.activeSession = session;
   state.events = session.events || [];
@@ -756,7 +812,10 @@ async function ensureSession() {
   renderHeader();
   return session;
 }
-function disconnectSession({ preserveRenderedMessages = false } = {}) {
+function disconnectSession({
+  preserveRenderedMessages = false,
+  preserveNativeApprovals = false,
+} = {}) {
   state.source?.close();
   state.source = null;
   clearTimeout(sessionReconcileTimer);
@@ -766,7 +825,7 @@ function disconnectSession({ preserveRenderedMessages = false } = {}) {
   sessionReconnectAttempts = 0;
   state.liveText = "";
   state.liveThinking = "";
-  state.nativeApprovalIds.clear();
+  if (!preserveNativeApprovals) state.nativeApprovalIds.clear();
   seenEventIds.clear();
   renderState.toolCards.clear();
   renderState.pendingToolCards.clear();
@@ -849,12 +908,24 @@ function setModelSelect(value) {
   }
   select.value = model;
 }
-function connectSession() {
+async function connectSession() {
   // 重连同一会话只换 SSE，不清已有节点；导航离开会话仍走 disconnectSession() 默认清理。
-  disconnectSession({ preserveRenderedMessages: true });
+  disconnectSession({
+    preserveRenderedMessages: true,
+    preserveNativeApprovals: true,
+  });
   const id = state.sessionId;
+  try {
+    await ensureSessionAuth();
+  } catch (error) {
+    console.error("会话流鉴权初始化失败", error);
+    if (state.sessionId === id)
+      toast("实时会话连接暂不可用，主界面仍可继续使用；稍后将自动重试");
+    return;
+  }
+  if (state.sessionId !== id) return;
   const source = new EventSource(
-    `/api/events?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`,
+    `/api/events?id=${encodeURIComponent(id)}`,
   );
   state.source = source;
   source.onmessage = (message) => {
@@ -1577,7 +1648,7 @@ function renderApproval(event, resolved, typed) {
   card.append(heading, el("b", "", event.tool));
   const isQuestion = event.tool === "AskUserQuestion";
   if (isQuestion && !resolved && state.running) {
-    for (const [index, question] of (event.input.questions || []).entries()) {
+    for (const [index, question] of (event.input?.questions || []).entries()) {
       card.append(el("label", "", question.question));
       if (question.options?.length)
         card.append(
@@ -1846,8 +1917,13 @@ function renderUsage() {
     return;
   }
   if (providerUsage && providerUsage.available === false) {
-    target.textContent = `${providerUsage.providerName || "当前服务商"} · 余额不可用`;
-    target.title = "CC Switch 当前供应商未返回可读取的余额";
+    // CCDPH-FIX(P3-33): 区分"查询失败"与"服务商确实没有余额接口" —— 原来失败被写成
+    // 确定态（"余额不可用"），用户无从判断该重试还是该放弃。
+    const failed = providerUsage.reason === "request-failed";
+    target.textContent = `${providerUsage.providerName || "当前服务商"} · ${failed ? "余额查询失败" : "余额不可用"}`;
+    target.title = failed
+      ? "未能从当前服务商取到余额（网络或接口错误）；可点左下角额度重试"
+      : "CC Switch 当前供应商未返回可读取的余额";
     return;
   }
   const usage = state.usage;
@@ -2016,7 +2092,7 @@ async function previewFile(file, diff) {
   }
   else content.textContent = result.text;
   $("#diff-feedback").classList.toggle("hidden", !diff);
-  $("#preview-dialog").showModal();
+  openDialog("#preview-dialog");
 }
 
 function setPanel(panel) {
@@ -2100,8 +2176,15 @@ async function startTerminalOnce(force = false) {
   state.terminalRoot = state.projectInfo?.root;
   setupTerminalView();
   if (!terminal.exited) {
+    try {
+      await ensureSessionAuth();
+    } catch (error) {
+      console.error("终端流鉴权初始化失败", error);
+      toast("终端已启动，但实时输出连接暂不可用，请稍后重新打开终端面板");
+      return terminal;
+    }
     const source = new EventSource(
-      `/api/terminal/events?id=${encodeURIComponent(terminal.id)}&token=${encodeURIComponent(token)}`,
+      `/api/terminal/events?id=${encodeURIComponent(terminal.id)}`,
     );
     state.terminalSource = source;
     source.onmessage = (message) => {
@@ -2109,7 +2192,7 @@ async function startTerminalOnce(force = false) {
       if (state.terminalSource !== source) return source.close();
       let event;
       try {
-        if (message.data.length > 5 * 1024 * 1024)
+        if (message.data.length > SSE_FRAME_CHARS)
           throw new Error("终端 SSE 消息过大，已丢弃");
         event = JSON.parse(message.data);
       } catch (parseError) {
@@ -2274,13 +2357,13 @@ function renderTerminal() {
 }
 
 function openProjectDialog() {
-  $("#project-dialog").showModal();
+  openDialog("#project-dialog");
   $("#project-path").focus();
 }
 function openRename(session = state.activeSession || activeSessionMeta()) {
   if (!session) return;
   $("#rename-input").value = session.title;
-  $("#rename-dialog").showModal();
+  openDialog("#rename-dialog");
   $("#rename-input").select();
 }
 function setSettingsValue(selector, value) {
@@ -3506,7 +3589,12 @@ function renderSettingsDiagnostics() {
   setText("#settings-plugin-count", integrations?.pluginCount ?? "—");
   setText(
     "#settings-hooks-summary",
-    integrations ? `${integrations.hookCount} 个已配置` : "正在扫描",
+    integrations
+      ? // CCDPH-FIX(P3-34): 扫描失败时 counts 为 null（不再伪造成 0），此处如实显示。
+        integrations.hookCount == null
+        ? "扫描失败"
+        : `${integrations.hookCount} 个已配置`
+      : "正在扫描",
   );
   setText(
     "#settings-claude-config-path",
@@ -3517,7 +3605,7 @@ function openSettings(tab = settingsTab) {
   fillSettingsControls();
   renderSettingsDiagnostics();
   setSettingsTab(typeof tab === "string" ? tab : "general");
-  $("#settings-dialog").showModal();
+  openDialog("#settings-dialog");
   void refreshIntegrations();
 }
 async function updateSession(changes) {
@@ -3540,6 +3628,21 @@ async function syncCurrentSessionControls() {
     permissionMode: $("#permission-mode").value,
     effort: $("#effort").value,
   };
+  if (
+    state.running &&
+    changes.permissionMode === "auto" &&
+    state.activeSession?.permissionMode !== "auto"
+  ) {
+    if (
+      !window.confirm(
+        "切换到自动模式后，本轮任务将不再逐项请求工具审批。确认继续吗？",
+      )
+    ) {
+      renderHeader();
+      return;
+    }
+    changes.confirmAutoEscalation = true;
+  }
   const rev = navigationRevision;
   const sid = state.sessionId;
   let result;
@@ -3572,6 +3675,17 @@ async function syncCurrentSessionControls() {
     plan: "计划模式",
     auto: "自动模式",
   };
+  // CCDPH-FIX(P2-3): 服务端会回报"明确请求、但运行中无法应用"的字段；此时不能再笼统提示
+  // "已更新"，否则用户会以为自定义模型 / 思考强度已切换，而实际并未生效。
+  const rejected = (result.rejected || []).map(
+    (field) =>
+      ({ model: "模型", effort: "思考强度", permissionMode: "权限模式" })[field] ||
+      field,
+  );
+  if (rejected.length) {
+    toast(`已更新，但运行中无法应用：${rejected.join("、")}（未生效）`);
+    return;
+  }
   const suffix = state.running ? "（运行中已应用）" : "";
   toast(
     `当前会话已更新：${modeLabels[updated.permissionMode] || updated.permissionMode} · ${updated.effort || "跟随思考配置"}${suffix}`,
@@ -3631,7 +3745,7 @@ async function handleTaskAction(name) {
     $("#preview-meta").textContent = "Markdown 对话记录";
     $("#preview-content").textContent = result.text;
     $("#diff-feedback").classList.add("hidden");
-    $("#preview-dialog").showModal();
+    openDialog("#preview-dialog");
   }
 }
 
@@ -3676,6 +3790,12 @@ async function saveSettings() {
   // 统一返回形状：导航已作废就视为「本次没有改 claude.exe」。
   if (rev !== navigationRevision) return { claudeChanged: false };
   state.apiAuthConfigured = state.settings.apiAuthConfigured === true;
+  state.apiAuthPersistence = state.settings.apiAuthPersistence || "encrypted";
+  state.apiAuthWarning = state.settings.apiAuthWarning || "";
+  if (state.apiAuthWarning && state.apiAuthWarning !== lastApiAuthWarning) {
+    lastApiAuthWarning = state.apiAuthWarning;
+    toast(state.apiAuthWarning);
+  }
   if (!state.activeSession) {
     $("#permission-mode").value = state.settings.defaultPermissionMode;
     $("#environment-mode").value = state.settings.defaultEnvironment;
@@ -4091,6 +4211,13 @@ $("#settings-dialog .settings-shell")?.addEventListener("keydown", (event) => {
   if (tag === "input" && event.target.type !== "button" && event.target.type !== "submit") {
     event.preventDefault();
     event.target.blur();
+    return;
+  }
+  // CCDPH-FIX(P3-32): 焦点在 <select> 上按 Enter 会触发 method="dialog" 表单提交并**关闭设置窗**。
+  // 一并拦掉（与 input 同样处理：阻止默认行为并移开焦点）。
+  if (tag === "select") {
+    event.preventDefault();
+    event.target.blur();
   }
 });
 for (const button of $$("#task-menu [data-action]"))
@@ -4431,9 +4558,17 @@ $("#api-profile-key-save").onclick = action(async () => {
   });
   $("#api-profile-key").value = "";
   $("#api-profile-key-status").textContent = result.hasKey
-    ? "已配置（保存在本机，不会回显；留空保存即清除）"
+    ? result.persistent
+      ? "已配置（系统安全存储加密，不会回显；留空保存即清除）"
+      : "已配置（仅本次运行保存在内存中；退出后需重新输入）"
     : "未配置";
-  toast(result.hasKey ? "API 密钥已保存" : "API 密钥已清除");
+  toast(
+    result.hasKey
+      ? result.persistent
+        ? "API 密钥已加密保存"
+        : result.warning || "API 密钥仅在本次运行中可用"
+      : "API 密钥已清除",
+  );
   await renderApiProfiles();
 });
 $("#api-profile-reset").onclick = resetApiProfileForm;
@@ -4753,14 +4888,15 @@ $("#command-input").onkeydown = (event) => {
     $("#command-results .command-item.selected")?.click();
   }
 };
-window.addEventListener("app-command", (event) => {
-  if (event.detail === "new-session") action(newSession)();
-  if (event.detail === "command-palette") openCommandPalette();
-  if (event.detail === "settings") openSettings();
-  if (event.detail?.type === "fullscreen") setFullscreen(event.detail.enabled);
-  if (event.detail?.type === "select-session")
-    action(() => selectSession(event.detail.id))();
-});
+const handleAppCommand = (detail) => {
+  if (detail === "new-session") action(newSession)();
+  if (detail === "command-palette") openCommandPalette();
+  if (detail === "settings") openSettings();
+  if (detail?.type === "fullscreen") setFullscreen(detail.enabled);
+  if (detail?.type === "select-session")
+    action(() => selectSession(detail.id))();
+};
+window.workbenchDesktop?.onAppCommand?.(handleAppCommand);
 // ---- 快捷键：设置里可录制修改，组合串格式 "ctrl+n" / "f11" ----
 const DEFAULT_SHORTCUTS = { newSession: "ctrl+n", palette: "ctrl+k", settings: "ctrl+," };
 function shortcutCombo(event) {
@@ -4906,6 +5042,7 @@ initializeZoom();
 setupComposerSelects();
 applyInspectorPreference();
 let providerUsageTimer = null;
+let rendererVisibilityRestorePending = false;
 function scheduleProviderUsageRefresh() {
   clearInterval(providerUsageTimer);
   providerUsageTimer = null;
@@ -4916,8 +5053,13 @@ function scheduleProviderUsageRefresh() {
   }, interval * 60000);
 }
 function handleVisibilityChange() {
-  if (!document.hidden && state.settings.usageAutoRefresh !== false)
-    void refreshProviderUsage(true);
+  if (document.hidden) return;
+  if (rendererVisibilityRestorePending) {
+    rendererVisibilityRestorePending = false;
+    if (state.sessionId) connectSession();
+    action(refreshState)();
+  }
+  if (state.settings.usageAutoRefresh !== false) void refreshProviderUsage(true);
 }
 // CCDPH-FIX(L-04): 窗口重新可见且终端面板处于激活态时补渲染一次，flush 隐藏期间累积的输出
 function handleTerminalVisibility() {
@@ -4958,7 +5100,7 @@ function disposeRendererResources() {
   const terminalId = state.terminalId;
   if (terminalId && !state.terminalExited && navigator.sendBeacon)
     navigator.sendBeacon(
-      `/api/terminal/stop?token=${encodeURIComponent(token)}`,
+      "/api/terminal/stop",
       new Blob([JSON.stringify({ id: terminalId })], {
         type: "application/json",
       }),
@@ -4972,6 +5114,7 @@ function disposeRendererResources() {
   // 已 dispose 的实例交回去 —— fit.fit() 抛错、term.write() 写进死终端。
   terminalView = null;
   systemTheme.removeEventListener("change", handleSystemThemeChange);
+  window.workbenchDesktop?.offAppCommand?.(handleAppCommand);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
   document.removeEventListener("visibilitychange", handleTerminalVisibility);
 }
@@ -4983,11 +5126,11 @@ window.addEventListener("beforeunload", disposeRendererResources);
 // 这里把恢复需要的重新挂载补齐；只在 bfcache 恢复（event.persisted）时做，避免首次加载多跑一遍
 // refreshState（那会与文件末尾的初始化并发）。监听器用的是同一批函数引用，重复注册本身是幂等的。
 function restoreRendererResources(event) {
+  if (!event.persisted) return;
   rendererDisposed = false;
   terminalView = null;
-  if (!event.persisted) return;
-  if (document.visibilityState !== "visible") return;
   systemTheme.addEventListener("change", handleSystemThemeChange);
+  window.workbenchDesktop?.onAppCommand?.(handleAppCommand);
   document.addEventListener("visibilitychange", handleTerminalVisibility);
   document.addEventListener("visibilitychange", handleVisibilityChange);
   scheduleProviderUsageRefresh();
@@ -4995,11 +5138,19 @@ function restoreRendererResources(event) {
     startUpdatePolling();
     void pollUpdateStatus();
   }
+  if (document.visibilityState !== "visible") {
+    rendererVisibilityRestorePending = true;
+    return;
+  }
+  rendererVisibilityRestorePending = false;
   if (state.sessionId) connectSession();
   action(refreshState)();
 }
 window.addEventListener("pageshow", restoreRendererResources);
 action(async () => {
+  await ensureSessionAuth().catch((error) =>
+    console.warn("会话 Cookie 初始化失败，先使用一次性启动令牌继续加载界面", error),
+  );
   await refreshState();
   $("#environment-mode").value = state.settings.defaultEnvironment || "local";
   $("#permission-mode").value =

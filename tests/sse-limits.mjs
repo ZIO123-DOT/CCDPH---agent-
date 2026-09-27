@@ -41,21 +41,25 @@ try {
     projectId: project.id,
     sessionId: session.id,
   });
-  const streamUrl = `${origin}/api/terminal/events?id=${encodeURIComponent(terminal.id)}&token=${token}`;
+  const streamUrl = `${origin}/api/terminal/events?id=${encodeURIComponent(terminal.id)}`;
+  const streamOptions = (signal) => ({
+    headers: { "x-workbench-token": token },
+    signal,
+  });
   for (let index = 0; index < 8; index += 1) {
     const controller = new AbortController();
     controllers.push(controller);
-    const response = await fetch(streamUrl, { signal: controller.signal });
+    const response = await fetch(streamUrl, streamOptions(controller.signal));
     assert.equal(response.status, 200);
     await response.body.getReader().read();
   }
-  const rejected = await fetch(streamUrl, { signal: AbortSignal.timeout(5000) });
+  const rejected = await fetch(streamUrl, streamOptions(AbortSignal.timeout(5000)));
   assert.equal(rejected.status, 429);
   controllers.shift().abort();
   await new Promise((resolve) => setTimeout(resolve, 100));
   const replacementController = new AbortController();
   controllers.push(replacementController);
-  const replacement = await fetch(streamUrl, { signal: replacementController.signal });
+  const replacement = await fetch(streamUrl, streamOptions(replacementController.signal));
   assert.equal(replacement.status, 200, "closing a stream must restore one connection slot");
   await replacement.body.getReader().read();
   await api("terminal/stop", { id: terminal.id });

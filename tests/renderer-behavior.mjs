@@ -77,11 +77,40 @@ const state = {
   claude: { path: "claude.exe", version: "1.0.0", error: "" },
   apiAuthConfigured: false,
 };
+let authAttempts = 0;
+let stateRaceMode = false;
+let stateRaceRequests = 0;
 
 await page.route("**/api/**", async (route) => {
   const url = new URL(route.request().url());
   let payload = {};
-  if (url.pathname === "/api/state") payload = state;
+  if (url.pathname === "/api/auth/session") {
+    authAttempts += 1;
+    if (authAttempts === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "temporary auth failure" }),
+      });
+      return;
+    }
+  } else if (url.pathname === "/api/state") {
+    if (stateRaceMode) {
+      stateRaceRequests += 1;
+      const requestNumber = stateRaceRequests;
+      if (requestNumber === 1)
+        await new Promise((resolve) => setTimeout(resolve, 180));
+      payload = {
+        ...state,
+        sessions: [
+          {
+            ...session,
+            title: requestNumber === 1 ? "stale-state-title" : "latest-state-title",
+          },
+        ],
+      };
+    } else payload = state;
+  }
   else if (url.pathname === "/api/session")
     payload = { ...session, events: [], running: true };
   else if (url.pathname === "/api/project-info")
@@ -102,6 +131,12 @@ await page.route("**/api/**", async (route) => {
 
 try {
   await page.goto(engine.getRuntime().url, { waitUntil: "networkidle" });
+  assert(authAttempts >= 2, "auth/session failure should be retried before opening SSE");
+  assert.equal(
+    await page.evaluate(() => sessionStorage.getItem("workbench-token")),
+    null,
+    "startup token must not be stored in sessionStorage",
+  );
   try {
     await page.waitForFunction(() => window.__eventSources.length === 1);
   } catch (error) {
@@ -186,6 +221,21 @@ try {
   await emit({ type: "done" });
   await page.waitForSelector("#messages strong:text('bold-final')");
 
+  stateRaceMode = true;
+  stateRaceRequests = 0;
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await page.waitForFunction(() => document.body.innerText.includes("latest-state-title"));
+  await page.waitForTimeout(250);
+  assert.equal(
+    await page.getByText("stale-state-title", { exact: true }).count(),
+    0,
+    "older refreshState response must not overwrite the latest state",
+  );
+  stateRaceMode = false;
+
   await page.click("#open-terminal");
   await page.waitForFunction(() => window.__eventSources.length >= 2);
   await page.evaluate(() => {
@@ -193,8 +243,34 @@ try {
     window.dispatchEvent(new Event("beforeunload"));
   });
   assert.equal(await page.evaluate(() => window.__beacons.length), 1);
-  await page.evaluate(() =>
-    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })),
+  const streamsBeforeHiddenRestore = await page.evaluate(
+    () => window.__eventSources.length,
+  );
+  await page.evaluate(() => {
+    window.__testDocumentHidden = true;
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => window.__testDocumentHidden,
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => (window.__testDocumentHidden ? "hidden" : "visible"),
+    });
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await page.waitForTimeout(50);
+  assert.equal(
+    await page.evaluate(() => window.__eventSources.length),
+    streamsBeforeHiddenRestore,
+    "hidden bfcache restore must defer SSE reconnect",
+  );
+  await page.evaluate(() => {
+    window.__testDocumentHidden = false;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForFunction(
+    (before) => window.__eventSources.length > before,
+    streamsBeforeHiddenRestore,
   );
   await page.click("#open-terminal");
   await page.waitForTimeout(50);

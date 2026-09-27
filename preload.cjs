@@ -2,29 +2,25 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 // CCDPH-FIX(NIT-1): on* 注册的 ipcRenderer.on 监听器原来没有任何取消手段 —— 渲染层只要在
 // 某条热路径上重新注册一次（重新初始化、重新挂载），同一个事件就会被处理 N 次。
-// 这里用 channel -> (回调 -> 真实监听器) 的映射记住包装函数，并为每个 on* 配一个对应的
-// off*；on* 的调用方式和返回值语义不变（返回值仍未被使用），新增的 off* 是纯增量 API。
-const listenersByChannel = new Map();
+//
+// CCDPH-FIX(P2-11): 原来用 WeakMap<回调, 包装函数> 去重，但 contextBridge **每次跨桥传递的
+// 回调在渲染层不保证是同一个对象**（身份可能不同），于是 off* 取不到包装函数而**静默失效**，
+// bfcache 恢复后监听器叠加、同一条指令被处理多次。
+// 改为**每个 channel 只保留一个包装监听器**：subscribe 先移除旧的，off* 按 channel 移除。
+// 应用实际就是每通道一个处理器（handleAppCommand / setFullscreen / …），语义与用法一致。
+const wrappedByChannel = new Map();
 function subscribe(channel, callback) {
   if (typeof callback !== "function") return;
+  unsubscribe(channel);
   const wrapped = (_event, ...args) => callback(...args);
-  let byCallback = listenersByChannel.get(channel);
-  if (!byCallback) {
-    byCallback = new WeakMap();
-    listenersByChannel.set(channel, byCallback);
-  }
-  // 同一个回调重复注册时先移除旧的，避免叠加
-  const previous = byCallback.get(callback);
-  if (previous) ipcRenderer.removeListener(channel, previous);
-  byCallback.set(callback, wrapped);
+  wrappedByChannel.set(channel, wrapped);
   ipcRenderer.on(channel, wrapped);
 }
-function unsubscribe(channel, callback) {
-  const byCallback = listenersByChannel.get(channel);
-  const wrapped = byCallback?.get(callback);
+function unsubscribe(channel) {
+  const wrapped = wrappedByChannel.get(channel);
   if (!wrapped) return;
   ipcRenderer.removeListener(channel, wrapped);
-  byCallback.delete(callback);
+  wrappedByChannel.delete(channel);
 }
 
 contextBridge.exposeInMainWorld("workbenchDesktop", {
@@ -32,13 +28,14 @@ contextBridge.exposeInMainWorld("workbenchDesktop", {
   approvalResolved: (requestId) =>
     ipcRenderer.send("approval-resolved", requestId),
   onFullscreenChange: (callback) => subscribe("fullscreen-change", callback),
-  offFullscreenChange: (callback) => unsubscribe("fullscreen-change", callback),
+  offFullscreenChange: () => unsubscribe("fullscreen-change"),
+  onAppCommand: (callback) => subscribe("app-command", callback),
+  offAppCommand: () => unsubscribe("app-command"),
   onNativeApproval: (callback) => subscribe("native-approval", callback),
-  offNativeApproval: (callback) => unsubscribe("native-approval", callback),
+  offNativeApproval: () => unsubscribe("native-approval"),
   onNativeApprovalResolved: (callback) =>
     subscribe("native-approval-resolved", callback),
-  offNativeApprovalResolved: (callback) =>
-    unsubscribe("native-approval-resolved", callback),
+  offNativeApprovalResolved: () => unsubscribe("native-approval-resolved"),
   quitForUpdate: () => ipcRenderer.send("quit-for-update"),
 });
 contextBridge.exposeInMainWorld("workbenchApproval", {

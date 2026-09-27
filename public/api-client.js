@@ -2,7 +2,10 @@ export const MAX_RESPONSE_CHARS = 5 * 1024 * 1024;
 export const SESSION_RESPONSE_CHARS = 64 * 1024 * 1024;
 export const SSE_FRAME_CHARS = 5 * 1024 * 1024;
 
-export function createApiClient(token, { timeoutMs = 30_000 } = {}) {
+export function createApiClient(
+  tokenProvider,
+  { timeoutMs = 30_000, onUnauthorized = null } = {},
+) {
   return async function api(route, data, options = {}) {
     const maxChars =
       Number(options.maxChars) > 0
@@ -12,10 +15,12 @@ export function createApiClient(token, { timeoutMs = 30_000 } = {}) {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
+      const token =
+        typeof tokenProvider === "function" ? tokenProvider() : tokenProvider;
       response = await fetch("/api/" + route, {
         method: data === undefined ? "GET" : "POST",
         headers: {
-          "x-workbench-token": token,
+          ...(token ? { "x-workbench-token": token } : {}),
           ...(data === undefined ? {} : { "Content-Type": "application/json" }),
         },
         ...(data === undefined ? {} : { body: JSON.stringify(data) }),
@@ -41,6 +46,15 @@ export function createApiClient(token, { timeoutMs = 30_000 } = {}) {
               : `请求失败（HTTP ${response.status}）`,
           );
         }
+      }
+      if (
+        response.status === 401 &&
+        options.retryUnauthorized !== false &&
+        typeof onUnauthorized === "function"
+      ) {
+        const recovered = await onUnauthorized();
+        if (recovered)
+          return api(route, data, { ...options, retryUnauthorized: false });
       }
       if (!response.ok) throw new Error(result.error || "请求失败");
       return result;

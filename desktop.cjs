@@ -16,7 +16,22 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const { createHash, timingSafeEqual } = require("node:crypto");
+const { execFile } = require("node:child_process");
 const ICON_DIR = path.join(__dirname, "build");
+const POWERSHELL_EXE = path.join(
+  process.env.SystemRoot || "C:\\Windows",
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
+const REQUIRED_RUNTIME_FILES = [
+  "desktop.cjs",
+  "server.mjs",
+  "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+  "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+  "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
+];
 let window,
   engine,
   server,
@@ -74,6 +89,12 @@ async function verifyPackagedRuntime() {
     const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
     if (!Array.isArray(manifest.files) || !manifest.files.length)
       throw new Error("完整性清单为空");
+    const manifestPaths = new Set(
+      manifest.files.map((item) => String(item?.path || "").replace(/\\/g, "/")),
+    );
+    for (const required of REQUIRED_RUNTIME_FILES)
+      if (!manifestPaths.has(required))
+        throw new Error(`完整性清单缺少关键运行时文件：${required}`);
     for (const item of manifest.files) {
       const relative = String(item?.path || "").replace(/\\/g, "/");
       if (!relative || relative.startsWith("/") || relative.split("/").includes(".."))
@@ -93,6 +114,48 @@ async function verifyPackagedRuntime() {
     console.error("[ccdph] 运行时完整性校验失败:", error?.message || error);
     return false;
   }
+}
+function verifyClaudeExecutableSignature() {
+  if (!app.isPackaged || process.platform !== "win32")
+    return Promise.resolve({ ok: true, reason: "not-applicable" });
+  const executable = path.join(
+    __dirname,
+    "node_modules",
+    "@anthropic-ai",
+    "claude-agent-sdk-win32-x64",
+    "claude.exe",
+  );
+  return new Promise((resolve) => {
+    execFile(
+      process.env.CCDPH_SIGNATURE_POWERSHELL || POWERSHELL_EXE,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Import-Module (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop;$s=Get-AuthenticodeSignature -LiteralPath $env:CCDPH_VERIFY_FILE;[Console]::Out.Write(($s.Status.ToString())+'|'+$s.SignerCertificate.Subject)",
+      ],
+      {
+        windowsHide: true,
+        timeout: 15_000,
+        maxBuffer: 16 * 1024,
+        env: { ...process.env, CCDPH_VERIFY_FILE: executable },
+      },
+      (error, stdout) => {
+        const result = String(stdout || "");
+        if (error || !/^Valid\|/.test(result) || !/O="?Anthropic, PBC"?/i.test(result)) {
+          const reason = error?.message || result || "无签名信息";
+          console.error(
+            "[ccdph] Claude Code 可执行文件签名验证失败:",
+            reason,
+          );
+          resolve({ ok: false, reason });
+          return;
+        }
+        resolve({ ok: true, reason: "" });
+      },
+    );
+  });
 }
 app.setPath("userData", path.join(portableRoot, ".desktop-data"));
 process.env.WORKBENCH_DATA_DIR = path.join(portableRoot, ".data");
@@ -125,10 +188,50 @@ else {
     .whenReady()
     .then(async () => {
       if (!(await verifyPackagedRuntime())) {
-        dialog.showErrorBox("CCDPH 启动被阻止", "运行时文件完整性校验失败，程序文件可能已损坏或被篡改。\n请重新部署最新版本。");
+        dialog.showErrorBox(
+          "CCDPH 启动被阻止",
+          "运行时文件已损坏或与当前发布清单不一致。\n请重新部署最新版本。",
+        );
         app.quit();
         return;
       }
+      // 签名验证是纵深防御，不得成为启动单点故障。后台验证，失败时告警但不阻塞主窗口。
+      void verifyClaudeExecutableSignature()
+        .then(async (signature) => {
+          if (signature.ok) return;
+          const message =
+            `Claude Code 签名无法验证，CCDPH 已降级继续启动。\n` +
+            `原因：${String(signature.reason || "未知").slice(0, 1000)}\n` +
+            "运行时 SHA-256 清单仍已通过；如 Claude Code 无法执行，请重新部署或检查 PowerShell/证书策略。";
+          const warningFile = path.join(
+            portableRoot,
+            ".data",
+            "startup-warnings.log",
+          );
+          await fs.mkdir(path.dirname(warningFile), { recursive: true }).catch(() => {});
+          await fs
+            .appendFile(
+              warningFile,
+              `[${new Date().toISOString()}] ${message}\n\n`,
+              "utf8",
+            )
+            .catch((error) =>
+              console.error(
+                "[ccdph] 写入启动告警日志失败:",
+                error?.message || error,
+              ),
+            );
+          if (!quitting)
+            void dialog.showMessageBox({
+              type: "warning",
+              title: "CCDPH 已降级启动",
+              message: "Claude Code 数字签名暂时无法验证",
+              detail: message,
+            });
+        })
+        .catch((error) =>
+          console.error("[ccdph] 后台签名验证异常:", error?.message || error),
+        );
       // 桌面快捷方式自维护：每次启动用 Electron 原生接口确保桌面有正确的 CCDPH.lnk
       // （target 指向本 exe、图标用 ccdph.ico；手写/第三方创建的坏快捷方式会被自动修正）
       try {
@@ -147,17 +250,6 @@ else {
       }
       engine = await import("./server.mjs");
       server = await engine.start();
-      // CCDPH-FIX(BR-5): 启动时清扫上一次**异常退出**（崩溃 / 被任务管理器强杀 / 关机）残留的
-      // 专用 Edge —— 那种情况下退出流程没有机会执行，带着登录态的 profile 和无鉴权的调试端口
-      // 会一直活着，而新一次启动用同一个 profileDir 只会把命令行转发给它然后自己退出，
-      // 于是「已启动」的浏览器其实监听在旧端口上，状态页只会显示未连接。
-      // 放在 start() 之后：此时 WORKBENCH_DATA_DIR 已由本文件设好，与 server.mjs 同目录。
-      try {
-        const browserService = await import("./browser/service.mjs");
-        await browserService.sweepStaleDedicatedEdge();
-      } catch (error) {
-        console.error("[ccdph] 专用浏览器残留清扫失败：", error.message);
-      }
       const darkWindow = nativeTheme.shouldUseDarkColors;
       window = new BrowserWindow({
         width: 1440,
@@ -481,24 +573,38 @@ else {
         const popup = approvalWindows.get(payload.requestId);
         const senderWindow = BrowserWindow.fromWebContents(event.sender);
         if (!popup || popup.isDestroyed() || !senderWindow || senderWindow !== popup) return;
+        let submitted = false;
         try {
           const runtime = engine.getRuntime();
           const url = new URL(runtime.url);
-          await fetch(`${url.origin}/api/approve`, {
+          const response = await fetch(`${url.origin}/api/approve`, {
             method: "POST",
             headers: {
               "content-type": "application/json",
               "x-workbench-token": url.hash.slice(1),
             },
             body: JSON.stringify(payload),
-          }).catch((err) => console.error("[ccdph] 审批提交失败：", err.message));
-          sendToMainWindow("native-approval-resolved", payload.requestId);
-        } finally {
-          // CCDPH-FIX(ELE-2): 这个窗口是靠按钮结束的，关闭时不必再把审批卡片弹回渲染层
-          settledApprovalWindows.add(popup);
-          if (!popup.isDestroyed()) popup.close();
-          approvalWindows.delete(payload.requestId);
+          });
+          submitted = response.ok;
+          if (!response.ok)
+            console.error(
+              "[ccdph] 审批提交被拒：",
+              response.status,
+              await response.text().catch(() => ""),
+            );
+        } catch (err) {
+          console.error("[ccdph] 审批提交失败：", err.message);
         }
+        // CCDPH-FIX(P2-2): 只有提交**成功**才按"已解决"处理。此前无论成败都发
+        // native-approval-resolved 并把小窗记入 settledApprovalWindows，等于把一次失败
+        // 静默当成用户已决定（决策丢失且无任何反馈）。失败时不发 resolved、也不标记
+        // settled —— 小窗关闭时的 closed 处理器会把审批权交还会话内卡片，用户可重试。
+        if (submitted) {
+          sendToMainWindow("native-approval-resolved", payload.requestId);
+          settledApprovalWindows.add(popup);
+        }
+        if (!popup.isDestroyed()) popup.close();
+        approvalWindows.delete(payload.requestId);
       });
       ipcMain.on("approval-resolved", (event, requestId) => {
         if (!trustedSender(event)) return;
@@ -513,12 +619,7 @@ else {
       const rendererCommand = (command) => {
         if (!window || window.isDestroyed() || window.webContents.isDestroyed())
           return Promise.resolve(false);
-        return window.webContents
-          .executeJavaScript(
-            `window.dispatchEvent(new CustomEvent("app-command", { detail: ${JSON.stringify(command)} }))`,
-          )
-          .then(() => true)
-          .catch(() => false);
+        return Promise.resolve(sendToMainWindow("app-command", command));
       };
       const syncFullscreen = (enabled) => {
         sendToMainWindow("fullscreen-change", enabled);
@@ -570,7 +671,8 @@ else {
               { role: "zoomOut", label: "缩小" },
               {
                 label: "全屏",
-                accelerator: "F11",
+                // CCDPH-FIX(P3-36): 去掉菜单 accelerator —— 渲染层 keydown 已处理 F11，
+                // 两处都绑会在同一次按键里 toggle 两次（看似"没反应"）。
                 click: () => {
                   // CCDPH-FIX(ELE-8): 窗口已销毁时这里会 TypeError（主进程未捕获异常）
                   if (!window || window.isDestroyed()) return;
@@ -630,7 +732,8 @@ else {
         // 专用浏览器不受 resourceCleanup 开关影响：那个无鉴权的调试端口是安全项，无条件收掉
         try {
           const { stopDedicatedEdge } = await import("./browser/service.mjs");
-          await stopDedicatedEdge();
+          if (!(await stopDedicatedEdge()))
+            console.error("[ccdph] 退出时未能确认专用浏览器进程树已结束");
         } catch (error) {
           console.error("[ccdph] 退出清理失败（结束专用浏览器）：", error.message);
         }

@@ -1,4 +1,12 @@
 import "./syntax-check.mjs";
+await import("./api-client-auth.mjs");
+await import("./update-install-success.mjs");
+await import("./worktree-create-safety.mjs");
+await import("./windows-tool-paths.mjs");
+await import("./terminal-registry-pending.mjs");
+await import("./terminal-registry-hardening.mjs");
+await import("./terminal-registry-read.mjs");
+await import("./terminal-registry-unreadable.mjs");
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -33,6 +41,20 @@ const browserProfileSafety = await runFile(
 );
 process.stdout.write(browserProfileSafety.stdout);
 process.stderr.write(browserProfileSafety.stderr);
+const browserLifecycle = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./browser-lifecycle.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(browserLifecycle.stdout);
+process.stderr.write(browserLifecycle.stderr);
+const browserStaleMarker = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./browser-stale-marker.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(browserStaleMarker.stdout);
+process.stderr.write(browserStaleMarker.stderr);
 const sseLimits = await runFile(
   process.execPath,
   [fileURLToPath(new URL("./sse-limits.mjs", import.meta.url))],
@@ -54,6 +76,34 @@ const resourceLimits = await runFile(
 );
 process.stdout.write(resourceLimits.stdout);
 process.stderr.write(resourceLimits.stderr);
+const credentialStorage = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./credential-storage.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(credentialStorage.stdout);
+process.stderr.write(credentialStorage.stderr);
+const credentialLock = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./credential-lock.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(credentialLock.stdout);
+process.stderr.write(credentialLock.stderr);
+const credentialMigrationFailure = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./credential-migration-failure.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(credentialMigrationFailure.stdout);
+process.stderr.write(credentialMigrationFailure.stderr);
+const credentialSessionOnly = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./credential-session-only.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(credentialSessionOnly.stdout);
+process.stderr.write(credentialSessionOnly.stderr);
 const renderer = await runFile(
   process.execPath,
   [fileURLToPath(new URL("./renderer-behavior.mjs", import.meta.url))],
@@ -61,6 +111,13 @@ const renderer = await runFile(
 );
 process.stdout.write(renderer.stdout);
 process.stderr.write(renderer.stderr);
+const rendererClobbering = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./renderer-clobbering.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(rendererClobbering.stdout);
+process.stderr.write(rendererClobbering.stderr);
 const terminalRecovery = await runFile(
   process.execPath,
   [fileURLToPath(new URL("./terminal-recovery.mjs", import.meta.url))],
@@ -68,4 +125,30 @@ const terminalRecovery = await runFile(
 );
 process.stdout.write(terminalRecovery.stdout);
 process.stderr.write(terminalRecovery.stderr);
+// CCDPH-FIX(P2-14): 该用例此前**只被 syntax-check 做语法检查、从不执行**（孤儿测试），
+// 于是"签名不可验证时必须告警并继续启动"这条行为没有任何门禁在守。
+// 它需要 CCDPH_PACKAGED_EXE 指向打包版可执行文件，未设置时自我 skip（退出码 0），
+// 因此接入 run.mjs 是安全的：有环境就跑，没环境就跳过。
+const packagedSignature = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./packaged-signature-fallback.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(packagedSignature.stdout);
+process.stderr.write(packagedSignature.stderr);
+// 本轮修复的回归护栏：导出/导入一致性（P1-1 同类）与 MCP 名校验（P2-1）
+const exportCoverage = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./frontend-export-coverage.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(exportCoverage.stdout);
+process.stderr.write(exportCoverage.stderr);
+const mcpSaveName = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./mcp-save-name.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(mcpSaveName.stdout);
+process.stderr.write(mcpSaveName.stderr);
 console.log("offline checks passed");
