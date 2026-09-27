@@ -152,3 +152,13 @@
 - 更新包：ZIP 任意路径段若以点或空格结尾即拒绝，避免 Windows 规范化后产生覆盖或碰撞。
 - 回归门禁：新增 `tests/resource-limits.mjs`，并把独立审计 harness 从“证明缺陷存在”翻转为
   修复回归；覆盖目录/项目上限、Claude wrapper 选择、toJSON/循环防护、并发 run 与 ZIP 边界。
+- SSE 首帧：会话与终端的 snapshot 现在走与增量广播相同的有界背压队列，不再直写绕过
+  `SSE_MAX_PENDING_BYTES` 记账。
+- 终端回退：ANSI CSI 按 ECMA-48 完整 `0x40–0x7E` 终止字节清洗，提取为可独立测试的
+  `public/terminal-text.js`；Windows 命令捕获按 UTF-8 字节上限截断，不再用 UTF-16 长度。
+- 错误可观测性：Git 权限/安装/safe.directory 失败不再伪装成“非 Git 仓库”；前端会话对账失败
+  写入 console 并提示用户；损坏 state 隔离失败时恢复说明明确写“原文件仍保留”。
+- 路径口径：`/api/diff` 只在明确 ENOENT（Git 删除文件）时采用严格词法回退，权限和 I/O 错误
+  不再降级；全局历史字节总量改为增量记账，publish 热路径不再扫描全部会话。
+- 发布流程：源码归档在 `D:\CCDPH-source`，桌面运行目录移除 tests/docs/test-output/旧备份；
+  `desktop.cjs` 在打包运行时校验 `runtime-integrity.json` 中的 SHA-256 清单，检测损坏后阻止启动。
