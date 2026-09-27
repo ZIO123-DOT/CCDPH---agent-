@@ -1,0 +1,11 @@
+node_modules/
+.npm-cache/
+.data/
+*.log
+test-output/
+dist/
+release/
+.desktop-data/
+.backup-*/
+.build-keep/
+release/

@@ -1,0 +1,2255 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CCDPH</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/vendor/xterm.css" />
+    <link rel="stylesheet" href="/vendor/hljs-theme.css" />
+    <script src="/vendor/icons.js"></script>
+    <script src="/vendor/highlight.min.js"></script>
+    <script src="/vendor/xterm.js"></script>
+    <script src="/vendor/xterm-fit.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <nav class="nav-rail" id="nav-rail" aria-label="快速导航">
+        <button class="rail-button active" data-nav="workspace" title="工作区">
+          <span data-icon="home"></span><span class="rail-label">工作区</span>
+        </button>
+        <button class="rail-button" data-nav="github" title="GitHub / 远程仓库">
+          <span data-icon="globe"></span><span class="rail-label">远程</span>
+        </button>
+        <button class="rail-button" data-nav="changes" title="Git 变更">
+          <span data-icon="file-diff"></span><span class="rail-label">变更</span>
+        </button>
+        <button class="rail-button" data-nav="worktrees" title="Worktrees">
+          <span data-icon="git-fork"></span><span class="rail-label">树</span>
+        </button>
+        <button
+          class="rail-button rail-settings"
+          data-nav="settings"
+          title="设置"
+        >
+          <span data-icon="settings"></span><span class="rail-label">设置</span>
+        </button>
+      </nav>
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <div class="brand">
+            <span class="brand-glyph">C</span
+            ><span class="brand-name">CCDPH</span>
+          </div>
+          <button class="icon-button" id="collapse-sidebar" title="收起侧栏">
+            <span data-icon="panel-left-close"></span>
+          </button>
+        </div>
+        <button class="new-task" id="new-session">
+          <span data-icon="plus"></span> 新建任务 <kbd>Ctrl+N</kbd>
+        </button>
+        <label class="search-box"
+          ><span data-icon="search"></span
+          ><input id="task-search" placeholder="搜索任务" /><kbd
+            >Ctrl+K</kbd
+          ></label
+        >
+        <nav class="workspace-nav" aria-label="工作区导航">
+          <button class="nav-item active" data-nav="workspace">
+            <span data-icon="home"></span><span>工作区</span>
+          </button>
+          <button class="nav-item" data-nav="github">
+            <span data-icon="globe"></span><span>GitHub / 远程</span>
+          </button>
+          <button class="nav-item" data-nav="changes">
+            <span data-icon="file-diff"></span><span>Git 变更</span>
+          </button>
+          <button class="nav-item" data-nav="worktrees">
+            <span data-icon="git-fork"></span><span>Worktrees</span>
+          </button>
+        </nav>
+        <div class="section-title">
+          <span>项目</span
+          ><button id="add-project" title="添加项目">
+            <span data-icon="plus"></span></button
+        ></div>
+        <div class="project-list" id="projects"></div>
+        <div class="section-title task-title">
+          <span id="task-list-label">任务</span
+          ><button id="show-archived" title="查看归档">归档</button>
+        </div>
+        <div class="session-list" id="sessions"></div>
+        <div class="sidebar-footer">
+          <details class="more-menu provider-switcher" id="provider-switcher">
+            <summary title="切换 API 供应商">
+              <span data-icon="arrow-left-right"></span>
+              <span id="provider-switcher-label">跟随 CC Switch</span>
+              <span data-icon="chevron-down" class="provider-caret"></span>
+            </summary>
+            <div class="popover" id="provider-switcher-menu"></div>
+          </details>
+          <button id="settings-button">
+            <span data-icon="settings"></span> 设置
+          </button>
+          <div class="engine-state">
+            <i></i><span id="connection">正在连接 Claude Code…</span>
+          </div>
+          <div class="usage-state" id="usage-status">额度：由服务商管理</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar-title">
+            <button
+              class="icon-button sidebar-reopen hidden"
+              id="reopen-sidebar"
+              title="显示侧栏"
+            >
+              ◨
+            </button>
+            <div>
+              <strong id="session-title">新任务</strong
+              ><small id="project-name">选择一个项目开始</small>
+            </div>
+            <span class="pill" id="environment-badge">本地</span>
+          </div>
+          <div class="topbar-actions">
+            <span class="git-pill hidden" id="branch-badge"
+              ><span data-icon="git-branch"></span> <span></span></span
+            ><span id="run-state" class="run-state"><i></i> 就绪</span>
+            <button
+              class="toolbar-button"
+              id="reveal-project"
+              title="在资源管理器中打开"
+            >
+              <span data-icon="folder-open"></span> <span>打开</span></button
+            ><button class="toolbar-button" id="open-terminal">
+              <span data-icon="square-terminal"></span> <span>终端</span></button
+            ><button class="toolbar-button active" id="toggle-inspector">
+              <span data-icon="panel-right"></span> <span>面板</span>
+            </button>
+            <details class="more-menu" id="task-menu">
+              <summary title="任务菜单">
+                <span data-icon="ellipsis"></span>
+              </summary>
+              <div class="popover">
+                <button data-action="rename">重命名任务</button
+                ><button data-action="pin">置顶任务</button
+                ><button data-action="export">导出对话</button
+                ><button data-action="archive">归档任务</button
+                ><button class="danger" data-action="delete">
+                  删除本地记录
+                </button>
+              </div>
+            </details>
+          </div>
+        </header>
+
+        <div class="chat-scroll" id="chat-scroll">
+          <section class="welcome" id="welcome">
+            <div class="setup-banner hidden" id="setup-banner">
+              <div class="setup-banner-icon" data-icon="circle-alert"></div>
+              <div>
+                <b>还没有连接 Claude Code</b
+                ><small id="setup-banner-text"
+                  >请先安装 Claude Code，或在环境设置中选择 claude.exe。</small
+                >
+              </div>
+              <button
+                type="button"
+                class="setup-banner-action"
+                id="open-setup-settings"
+              >
+                打开环境设置
+              </button>
+            </div>
+            <div class="welcome-logo">C</div>
+            <h1>今天想构建什么？</h1>
+            <p>Claude Code 会在所选项目中读取文件、运行命令并完成任务。</p>
+            <div class="suggestions">
+              <button
+                data-prompt="浏览这个项目，解释目录结构、主要功能和运行方式。暂时不要修改文件。"
+              >
+                <span data-icon="book-open"></span><b>了解代码库</b
+                ><small>梳理结构和入口</small>
+              </button>
+              <button
+                data-prompt="检查当前工作区中的改动，找出明确的 bug、风险和遗漏的测试。"
+              >
+                <span data-icon="shield-check"></span><b>审查代码</b
+                ><small>检查当前 Git 修改</small>
+              </button>
+              <button
+                data-prompt="运行这个项目已有的测试，分析失败原因并修复问题。"
+              >
+                <span data-icon="circle-play"></span><b>运行并修复测试</b
+                ><small>验证项目状态</small>
+              </button>
+              <button
+                data-prompt="我想增加一个功能。先了解项目，然后问我实现这个功能所需的关键问题。"
+              >
+                <span data-icon="sparkles"></span><b>实现新功能</b
+                ><small>从需求到可运行代码</small>
+              </button>
+            </div>
+          </section>
+          <div class="messages" id="messages"></div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="context-chips" id="context-chips"></div>
+          <div
+            class="slash-menu hidden"
+            id="slash-menu"
+            role="listbox"
+            aria-label="Claude Skills"
+          ></div>
+          <form class="composer" id="composer">
+            <textarea
+              id="prompt"
+              rows="2"
+              placeholder="向 Claude 描述任务，@ 可引用文件，/ 可使用命令…"
+              aria-label="给 Claude 的消息"
+            ></textarea>
+            <div class="composer-bar">
+              <div class="composer-left">
+                <button
+                  type="button"
+                  class="round-button"
+                  id="add-context"
+                  title="添加文件到上下文"
+                >
+                  <span data-icon="plus"></span></button
+                ><button
+                  type="button"
+                  class="round-button"
+                  id="add-image"
+                  title="添加图片或截图"
+                >
+                  <span data-icon="image"></span></button
+                ><input
+                  id="image-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
+                  multiple
+                  hidden
+                />
+                <select id="model" aria-label="模型">
+                  <option value="">跟随 CC Switch</option>
+                  <option value="sonnet">Sonnet</option>
+                  <option value="opus">Opus</option>
+                  <option value="haiku">Haiku</option></select
+                ><select id="permission-mode" aria-label="权限模式">
+                  <option value="default">手动确认</option>
+                  <option value="acceptEdits">自动接受编辑</option>
+                  <option value="plan">计划模式</option>
+                  <option value="auto">自动模式</option></select
+                ><select id="effort" aria-label="思考强度">
+                  <option value="inherit">跟随配置</option>
+                  <option value="low">低思考</option>
+                  <option value="medium">中思考</option>
+                  <option value="high">高思考</option>
+                  <option value="xhigh">很高</option>
+                  <option value="max">最大</option></select
+                ><select
+                  id="environment-mode"
+                  aria-label="工作环境"
+                  title="只影响新任务"
+                >
+                  <option value="local">当前工作区</option>
+                  <option value="worktree">独立 Worktree</option>
+                </select>
+              </div>
+              <div class="composer-right">
+                <span id="composer-hint">Enter 发送</span
+                ><button type="button" class="stop-button hidden" id="stop">
+                  <span data-icon="square"></span></button
+                ><button
+                  type="submit"
+                  class="send-button"
+                  id="send"
+                  title="发送"
+                >
+                  <span data-icon="arrow-up"></span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <div class="inspector-tabs">
+          <button class="panel-tab active" data-panel="files">文件</button
+          ><button class="panel-tab" data-panel="changes">
+            变更 <span id="change-count">0</span></button
+          ><button class="panel-tab" data-panel="terminal">终端</button
+          ><button
+            class="icon-button"
+            id="refresh-panel"
+            title="刷新"
+          >
+            <span data-icon="rotate-cw"></span>
+          </button>
+        </div>
+        <div class="panel-tools" id="file-tools">
+          <label class="panel-search"
+            ><span>⌕</span><input id="file-search" placeholder="按文件名搜索"
+          /></label>
+        </div>
+        <div class="panel-body" id="file-list"></div>
+        <div class="panel-body hidden" id="changes-panel">
+          <div class="change-summary" id="change-summary"></div>
+          <button class="review-button" id="review-changes">
+            审查当前修改
+          </button>
+          <div id="change-list"></div>
+        </div>
+        <div class="panel-body terminal-panel hidden" id="terminal-panel">
+          <div class="terminal-head">
+            <span id="terminal-cwd">本地终端</span
+            ><button id="restart-terminal">重新启动</button>
+          </div>
+          <div id="terminal-xterm" class="terminal-output hidden"></div>
+          <pre id="terminal-output">
+打开终端后，可直接在项目目录中运行命令。</pre
+          >
+          <form id="terminal-form">
+            <span data-icon="chevron-right"></span
+            ><input
+              id="terminal-input"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="输入命令后按 Enter"
+            />
+          </form>
+        </div>
+        <div class="inspector-footer">
+          <span id="workspace-path">文件保留在本机</span>
+        </div>
+      </aside>
+    </div>
+
+    <button
+      id="fullscreen-exit"
+      class="fullscreen-exit hidden"
+      title="退出全屏"
+    >
+      退出全屏 <kbd>F11 / Esc</kbd>
+    </button>
+
+    <dialog id="project-dialog" class="modal small-modal">
+      <form id="project-form">
+        <header>
+          <div class="dialog-icon" data-icon="folder-plus"></div>
+          <button type="button" data-close="project-dialog">
+            <span data-icon="x"></span>
+          </button>
+        </header>
+        <h2>添加项目</h2>
+        <p>选择 Claude Code 可以访问的项目文件夹。</p>
+        <label>文件夹路径</label>
+        <div class="path-input">
+          <input
+            id="project-path"
+            required
+            placeholder="D:\Projects\my-project"
+          /><button type="button" id="browse-folder">浏览…</button>
+        </div>
+        <footer>
+          <button type="button" data-close="project-dialog">取消</button
+          ><button type="submit" class="primary">添加项目</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="rename-dialog" class="modal compact-modal">
+      <form id="rename-form">
+        <h2>重命名任务</h2>
+        <input id="rename-input" maxlength="80" required />
+        <footer>
+          <button type="button" data-close="rename-dialog">取消</button
+          ><button type="submit" class="primary">保存</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="settings-dialog" class="modal settings-modal">
+      <form method="dialog" class="settings-shell">
+        <header class="settings-topbar">
+          <button class="settings-back" value="close">
+            <span><span data-icon="arrow-left"></span></span> 返回应用
+          </button>
+          <div class="settings-title">CCDPH 设置</div>
+          <button class="settings-close" value="close" title="关闭">
+            <span data-icon="x"></span>
+          </button>
+        </header>
+        <div class="settings-layout">
+          <aside class="settings-nav" aria-label="设置分类">
+            <label class="settings-search"
+              ><span data-icon="search"></span
+              ><input id="settings-search" placeholder="搜索设置…"
+            /></label>
+            <small>个人</small>
+            <button type="button" class="active" data-settings-tab="general">
+              <span data-icon="settings"></span>常规
+            </button>
+            <button type="button" data-settings-tab="appearance">
+              <span data-icon="palette"></span>外观
+            </button>
+            <button type="button" data-settings-tab="notifications">
+              <span data-icon="bell"></span>通知
+            </button>
+            <button type="button" data-settings-tab="import">
+              <span data-icon="download"></span>导入
+            </button>
+            <button type="button" data-settings-tab="profile">
+              <span data-icon="user"></span>个人资料
+            </button>
+            <button type="button" data-settings-tab="voice">
+              <span data-icon="mic"></span>语音
+            </button>
+            <button type="button" data-settings-tab="personalization">
+              <span data-icon="wand-sparkles"></span>个性化
+            </button>
+            <button type="button" data-settings-tab="pets">
+              <span data-icon="paw-print"></span>宠物
+            </button>
+            <button type="button" data-settings-tab="shortcuts">
+              <span data-icon="keyboard"></span>键盘快捷键
+            </button>
+            <button type="button" data-settings-tab="usage">
+              <span data-icon="gauge"></span>使用情况和计费
+            </button>
+            <button type="button" data-settings-tab="analytics">
+              <span data-icon="chart-column"></span>分析
+            </button>
+            <button type="button" data-settings-tab="account">
+              <span data-icon="circle-user"></span>账户
+            </button>
+            <small>集成</small>
+            <button type="button" data-settings-tab="computer">
+              <span data-icon="monitor"></span>电脑操控
+            </button>
+            <button type="button" data-settings-tab="plugins">
+              <span data-icon="puzzle"></span>插件
+            </button>
+            <button type="button" data-settings-tab="browser">
+              <span data-icon="app-window"></span>浏览器
+            </button>
+            <small>编码</small>
+            <button type="button" data-settings-tab="agent">
+              <span data-icon="bot"></span>模型与思考
+            </button>
+            <button type="button" data-settings-tab="permissions">
+              <span data-icon="shield-check"></span>权限
+            </button>
+            <button type="button" data-settings-tab="provider">
+              <span data-icon="arrow-left-right"></span>CC Switch
+            </button>
+            <button type="button" data-settings-tab="api">
+              <span data-icon="key-round"></span>API 接入
+            </button>
+            <button type="button" data-settings-tab="integrations">
+              <span data-icon="blocks"></span>MCP 与扩展
+            </button>
+            <button type="button" data-settings-tab="hooks">
+              <span data-icon="webhook"></span>Hooks
+            </button>
+            <button type="button" data-settings-tab="connections">
+              <span data-icon="cable"></span>连接
+            </button>
+            <button type="button" data-settings-tab="git">
+              <span data-icon="git-branch"></span>Git
+            </button>
+            <button type="button" data-settings-tab="environment">
+              <span data-icon="hard-drive"></span>环境
+            </button>
+            <button type="button" data-settings-tab="worktrees">
+              <span data-icon="git-fork"></span>Worktrees
+            </button>
+            <button type="button" data-settings-tab="projects">
+              <span data-icon="folder-git-2"></span>项目与 Git
+            </button>
+            <button type="button" data-settings-tab="terminal">
+              <span data-icon="square-terminal"></span>终端
+            </button>
+            <small>应用</small>
+            <button type="button" data-settings-tab="data">
+              <span data-icon="database"></span>数据与隐私
+            </button>
+            <button type="button" data-settings-tab="about">
+              <span data-icon="info"></span>关于
+            </button>
+          </aside>
+          <main class="settings-content">
+            <section class="settings-panel" data-settings-panel="general">
+              <div class="settings-heading">
+                <h3>常规</h3>
+                <p>启动、恢复和窗口行为</p>
+              </div>
+              <div class="settings-card">
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>关闭到系统托盘</b
+                    ><small>点击窗口关闭按钮后继续在后台运行</small>
+                  </div>
+                  <input type="checkbox" id="close-to-tray-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>恢复最近会话</b
+                    ><small>启动时打开上次项目中最近的任务</small>
+                  </div>
+                  <input type="checkbox" id="restore-session-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>自动生成任务名称</b
+                    ><small>使用每个新会话的第一条消息作为任务名称</small>
+                  </div>
+                  <input type="checkbox" id="auto-name-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>默认显示右侧面板</b
+                    ><small>新启动时显示文件、变更和终端面板</small>
+                  </div>
+                  <input type="checkbox" id="default-inspector-setting"
+                /></label>
+              </div>
+            </section>
+
+            <section class="settings-panel hidden" data-settings-panel="import">
+              <div class="settings-heading">
+                <h3>导入</h3>
+                <p>从本机导入 Claude Code 和 Workbench 数据</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>Claude Code 会话</b
+                    ><small
+                      >底层会话由 Claude Code 管理，Workbench
+                      会在选择项目后恢复可续接会话</small
+                    >
+                  </div>
+                  <span class="readonly-status">自动发现</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>导入旧版 Workbench 数据</b
+                    ><small>只读取本地 JSON 数据，不覆盖当前会话</small>
+                  </div>
+                  <button type="button" class="setting-action" disabled>
+                    选择文件夹
+                  </button>
+                </div>
+                <div class="settings-explainer">
+                  <b>当前状态</b>
+                  <p>
+                    本地导入向导正在规划中；当前版本会自动恢复 exe 旁的
+                    .data/state.json。
+                  </p>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="profile"
+            >
+              <div class="settings-heading">
+                <h3>个人资料</h3>
+                <p>本机显示身份与通知名称</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>显示名称</b
+                    ><small>仅用于本机完成通知和界面，不会发送给模型</small>
+                  </div>
+                  <span class="readonly-status">本地用户</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>头像</b><small>CCDPH 使用 C 标识</small>
+                  </div>
+                  <button type="button" class="setting-action" disabled>
+                    更改
+                  </button>
+                </div>
+              </div>
+            </section>
+            <section class="settings-panel hidden" data-settings-panel="voice">
+              <div class="settings-heading">
+                <h3>语音</h3>
+                <p>语音输入与朗读</p>
+              </div>
+              <div class="settings-card">
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>语音输入</b><small>浏览器权限和语音服务尚未接入</small>
+                  </div>
+                  <input type="checkbox" disabled /></label
+                ><label class="setting-row toggle-row"
+                  ><div>
+                    <b>朗读回复</b><small>桌面版暂不提供系统朗读桥接</small>
+                  </div>
+                  <input type="checkbox" disabled
+                /></label>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="personalization"
+            >
+              <div class="settings-heading">
+                <h3>个性化</h3>
+                <p>界面语言、回答角色与自定义设定</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>界面语言</b><small>切换后立即生效；更多语言在计划中</small>
+                  </div>
+                  <select id="language-setting">
+                    <option value="zh-CN">简体中文</option>
+                    <option value="en">English（即将推出）</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>回答角色</b
+                    ><small>按你的身份调整 Claude 的讲解深度和用词</small>
+                  </div>
+                  <select id="persona-setting">
+                    <option value="default">默认（跟随项目）</option>
+                    <option value="college">大学生 · 循序渐进</option>
+                    <option value="senior">资深程序员 · 直击要点</option>
+                    <option value="student">中学生 · 通俗易懂</option>
+                    <option value="custom">自定义…</option>
+                  </select>
+                </div>
+                <div class="persona-custom hidden" id="persona-custom-row">
+                  <textarea
+                    id="persona-custom"
+                    rows="3"
+                    maxlength="2000"
+                    placeholder="用一两句话描述你的背景和偏好，例如：我是电子信息专业大三学生，正在备赛电赛，请多解释硬件相关概念。"
+                  ></textarea>
+                  <small>会作为背景设定注入每一轮对话，不影响项目里的 CLAUDE.md。</small>
+                </div>
+              </div>
+            </section>
+            <section class="settings-panel hidden" data-settings-panel="pets">
+              <div class="settings-heading">
+                <h3>宠物</h3>
+                <p>桌面装饰</p>
+              </div>
+              <div class="settings-card">
+                <div class="settings-explainer">
+                  <b>本地版暂未启用宠物装饰</b>
+                  <p>保持工作台专注于项目、会话和工具执行。</p>
+                </div>
+              </div>
+            </section>
+            <section class="settings-panel hidden" data-settings-panel="usage">
+              <div class="settings-heading">
+                <h3>使用情况和计费</h3>
+                <p>Provider 余额、当前会话成本和接口状态</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>当前 Provider 余额</b
+                    ><small>来自 CC Switch 的受支持余额接口</small>
+                  </div>
+                  <span id="usage-setting-summary" class="readonly-status"
+                    >正在检测…</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>本轮等值成本</b
+                    ><small>仅供估算，不代表第三方实际扣费</small>
+                  </div>
+                  <span class="readonly-status">在聊天结果中显示</span>
+                </div>
+                <div class="settings-explainer">
+                  <b>隐私</b>
+                  <p>
+                    Workbench 不上传账单信息；Provider 密钥只在本地 Node
+                    服务端使用。
+                  </p>
+                </div>
+              </div>
+              <div class="settings-card usage-card">
+                <div class="usage-chart-head">
+                  <b>Token 用量统计</b
+                  ><small>最近 14 天 · 每完成一轮任务累计一次</small>
+                </div>
+                <div id="usage-chart" class="usage-chart"></div>
+                <div class="usage-chart-legend">
+                  <span><i class="legend-dot legend-input"></i>输入 token</span>
+                  <span><i class="legend-dot legend-output"></i>输出 token</span>
+                  <span id="usage-chart-total"></span>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="analytics"
+            >
+              <div class="settings-heading">
+                <h3>分析</h3>
+                <p>本地运行状态与资源诊断</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>遥测</b><small>当前版本不向外部发送遥测事件</small>
+                  </div>
+                  <span class="readonly-status">已关闭</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>资源清理</b
+                    ><small
+                      >退出时清理终端、SSE、审批窗口和额度计时器；关闭后终端等子进程会保留</small
+                    >
+                  </div>
+                  <label class="switch">
+                    <input
+                      type="checkbox"
+                      id="resource-cleanup-setting"
+                      checked
+                    />
+                    <span></span>
+                  </label>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="account"
+            >
+              <div class="settings-heading">
+                <h3>账户</h3>
+                <p>运行客户端与 API 渠道</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>运行客户端</b
+                    ><small id="account-claude-status">正在检测</small>
+                  </div>
+                  <span class="readonly-status">本机安装</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>API 渠道</b
+                    ><small id="account-provider-status">正在检测</small>
+                  </div>
+                  <span class="readonly-status">请求服务商</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>请求链路</b
+                    ><small id="account-request-chain">正在检测</small>
+                  </div>
+                  <span class="readonly-status">只读</span>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>API 供应商账户</b
+                    ><small
+                      >添加多套 API Key，随时在侧栏底部一键切换使用方</small
+                    >
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action primary-action"
+                    id="add-account-button"
+                  >
+                    ＋ 添加账户
+                  </button>
+                </div>
+                <div id="account-profile-list" class="account-profile-list">
+                  <div class="muted">正在加载…</div>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="computer"
+            >
+              <div class="settings-heading">
+                <h3>电脑操控</h3>
+                <p>桌面自动化与浏览器控制</p>
+              </div>
+              <div class="settings-card">
+                <div class="settings-explainer">
+                  <b>本地版未接入</b>
+                  <p>
+                    Workbench 只控制 Claude Code
+                    的项目工具和集成终端，不申请系统级鼠标、键盘或浏览器控制权限。
+                  </p>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="plugins"
+            >
+              <div class="settings-heading">
+                <h3>插件</h3>
+                <p>Claude Code 本地插件目录</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>已安装插件</b
+                    ><small>可在“MCP 与扩展”查看本机插件目录计数</small>
+                  </div>
+                  <span class="readonly-status">本地扫描</span>
+                </div>
+                <div class="settings-explainer">
+                  <b>插件商店</b>
+                  <p>
+                    云端插件商店不是 Claude Code 本地 SDK
+                    的一部分，当前不显示不可用的安装按钮。
+                  </p>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="browser"
+            >
+              <div class="settings-heading">
+                <h3>浏览器</h3>
+                <p>让 AI 操控浏览器，复用你的登录态</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>启用浏览器能力</b
+                    ><small
+                      >开启后 Claude 会获得一组 browser_* 工具（两引擎均支持）；关闭时零副作用、不注入任何配置</small
+                    >
+                  </div>
+                  <input
+                    type="checkbox"
+                    id="browser-enabled"
+                    class="toggle-input"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="setting-row" id="browser-mode-row">
+                  <div>
+                    <b>连接模式</b><small>决定 AI 使用哪一套登录态</small>
+                  </div>
+                  <select id="browser-mode">
+                    <option value="attach">
+                      复用我的 Edge（推荐，最像 Codex）
+                    </option>
+                    <option value="dedicated">
+                      专用授权 Browser（登录一次长期保留）
+                    </option>
+                  </select>
+                </div>
+                <div id="browser-status" class="browser-status">正在加载…</div>
+                <div class="setting-row">
+                  <div>
+                    <b>检测到的浏览器</b>
+                    <small id="browser-detected">正在检测…</small>
+                  </div>
+                </div>
+                <div id="browser-tabs" class="browser-tabs"></div>
+              </div>
+              <div class="settings-card">
+                <div class="settings-explainer">
+                  <b id="browser-guide-title">如何授权</b>
+                  <div id="browser-guide-body">
+                    <p>正在加载…</p>
+                  </div>
+                  <div class="setting-action-group">
+                    <button
+                      type="button"
+                      class="setting-action"
+                      id="browser-launch"
+                    >
+                      打开授权页面 / 启动浏览器
+                    </button>
+                    <button
+                      type="button"
+                      class="setting-action"
+                      id="browser-refresh"
+                    >
+                      刷新状态
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="settings-explainer">
+                  <b>安全提示（必读）</b>
+                  <p>
+                    启用后，被连接的浏览器内容（含已登录页面、Cookie
+                    会话）对 AI 可见。建议在"权限"里将敏感任务设为计划模式（只读），或使用下方域名限制缩小访问范围。浏览器能力由
+                    Claude Code 的 MCP 工具提供。
+                  </p>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>允许的域名</b
+                    ><small>分号分隔；留空表示不限制（仅写入类操作受控）</small>
+                  </div>
+                  <input
+                    type="text"
+                    id="browser-allow-origins"
+                    placeholder="example.com;*.example.org"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>阻止的域名</b
+                    ><small>分号分隔；命中的站点不会被 AI 操作</small>
+                  </div>
+                  <input
+                    type="text"
+                    id="browser-block-origins"
+                    placeholder="bank.example.com"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
+              </div>
+            </section>
+            <section class="settings-panel hidden" data-settings-panel="hooks">
+              <div class="settings-heading">
+                <h3>Hooks</h3>
+                <p>Claude Code 生命周期钩子</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>当前 Hooks</b
+                    ><small id="settings-hooks-summary">正在扫描</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="hooks-refresh"
+                  >
+                    刷新
+                  </button>
+                </div>
+                <div class="settings-explainer">
+                  <b>安全边界</b>
+                  <p>
+                    Workbench 不执行或改写 Hooks；Claude Code
+                    会在自己的权限模型中运行它们。命令里的密钥（sk-xxx、token 等）只显示前
+                    4 位，读取 settings.json 后再写入时会保留文件里的其它配置。
+                  </p>
+                </div>
+                <div id="hooks-list" class="hooks-list">
+                  <div class="muted">正在加载…</div>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>添加 Hook</b
+                    ><small>为某个事件新增一条命令</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action primary-action"
+                    id="hooks-add"
+                  >
+                    ＋ 添加 Hook
+                  </button>
+                </div>
+                <div id="hooks-editor" class="hooks-editor hidden">
+                  <div class="setting-row">
+                    <div><b>事件</b><small>Claude Code 的触发时机</small></div>
+                    <select id="hooks-event"></select>
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <b>Matcher</b
+                      ><small>留空匹配全部，如 Bash、Write、Edit</small>
+                    </div>
+                    <input
+                      id="hooks-matcher"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <b>命令</b
+                      ><small>该事件触发时执行的命令（留空=编辑时保留原命令）</small>
+                    </div>
+                    <input
+                      id="hooks-command"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="setting-row">
+                    <div class="api-form-actions">
+                      <button
+                        type="button"
+                        class="setting-action primary-action"
+                        id="hooks-save"
+                      >
+                        保存 Hook
+                      </button>
+                      <button type="button" class="setting-action" id="hooks-cancel">
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="connections"
+            >
+              <div class="settings-heading">
+                <h3>连接</h3>
+                <p>本地服务、API 和网络边界</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>Workbench 服务</b
+                    ><small>仅监听本机 127.0.0.1，并使用随机令牌</small>
+                  </div>
+                  <span class="readonly-status">本机</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>CC Switch</b
+                    ><small>由 CC Switch 管理当前模型和代理</small>
+                  </div>
+                  <span
+                    id="settings-connection-provider"
+                    class="readonly-status"
+                    >正在检测</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>网络代理</b
+                    ><small>跟随 Claude Code 和 CC Switch 环境</small>
+                  </div>
+                  <span class="readonly-status">跟随环境</span>
+                </div>
+              </div>
+            </section>
+            <section class="settings-panel hidden" data-settings-panel="git">
+              <div class="settings-heading">
+                <h3>Git</h3>
+                <p>仓库状态、身份、远程和变更面板</p>
+              </div>
+              <div class="settings-card" id="git-overview-card">
+                <div class="setting-row">
+                  <div>
+                    <b>当前分支</b
+                    ><small id="settings-git-branch">尚未检测</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="settings-git-refresh"
+                  >
+                    刷新
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>上游分支</b
+                    ><small id="settings-git-upstream">尚未检测</small>
+                  </div>
+                  <span
+                    id="settings-git-aheadbehind"
+                    class="readonly-status"
+                    >—</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>未提交变更</b
+                    ><small id="settings-git-changestat">尚未检测</small>
+                  </div>
+                  <span id="settings-git-changes" class="readonly-status">—</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>最近提交</b
+                    ><small id="settings-git-lastcommit">尚未检测</small>
+                  </div>
+                  <span class="readonly-status">HEAD</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>远程 origin</b
+                    ><small id="settings-git-remote">尚未检测</small>
+                  </div>
+                  <span id="settings-git-worktrees" class="readonly-status"
+                    >—</span
+                  >
+                </div>
+                <div class="settings-explainer">
+                  <b>变更安全</b>
+                  <p>
+                    文件面板只读；所有修改由 Claude Code 工具执行，Workbench
+                    不自动提交或推送。
+                  </p>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>Git 身份</b
+                    ><small>提交记录里的作者名与邮箱；可写入全局或当前仓库</small>
+                  </div>
+                  <div class="path-setting-control">
+                    <select id="git-identity-scope">
+                      <option value="global">全局（--global）</option>
+                      <option value="local">当前仓库（--local）</option>
+                    </select>
+                    <button
+                      type="button"
+                      class="setting-action primary-action"
+                      id="git-identity-save"
+                    >
+                      保存身份
+                    </button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>用户名</b><small id="git-user-name-hint">提交记录里的作者名</small>
+                  </div>
+                  <input id="git-user-name" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>邮箱</b
+                    ><small id="git-user-email-hint">提交记录里的作者邮箱</small>
+                  </div>
+                  <input id="git-user-email" autocomplete="off" spellcheck="false" />
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>远程仓库管理</b
+                    ><small
+                      >当前项目的所有 remote；支持 ssh://git@主机:端口/路径 形式配置端口</small
+                    >
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action primary-action"
+                    id="git-remote-add-button"
+                  >
+                    ＋ 添加远程
+                  </button>
+                </div>
+                <div id="git-remote-list" class="git-remote-list">
+                  <div class="muted">选择项目后显示远程仓库</div>
+                </div>
+                <div id="git-remote-editor" class="git-remote-editor hidden">
+                  <div class="setting-row">
+                    <div><b>远程名称</b><small>如 origin、upstream</small></div>
+                    <input id="git-remote-name" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <b>仓库地址</b
+                      ><small
+                        >https://… 或 ssh://git@github.com:22/用户/仓库.git（端口写在 URL 里）</small
+                      >
+                    </div>
+                    <input id="git-remote-url" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="setting-row">
+                    <div class="api-form-actions">
+                      <button type="button" class="setting-action primary-action" id="git-remote-save">保存远程</button>
+                      <button type="button" class="setting-action" id="git-remote-cancel">取消</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="settings-explainer">
+                  <b>多仓库说明</b>
+                  <p>
+                    每个项目独立维护自己的 remote 列表；同一台机器可以有任意多个
+                    remote（origin 之外可加 upstream、fork 等），推拉时在
+                    Claude 对话里指定远程名即可。
+                  </p>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="environment"
+            >
+              <div class="settings-heading">
+                <h3>环境</h3>
+                <p>项目目录和 Claude Code 运行环境</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>当前项目目录</b
+                    ><small id="settings-environment-root">尚未选择</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="settings-environment-reveal"
+                  >
+                    打开
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>默认工作环境</b
+                    ><small>新会话使用当前工作区或独立 Worktree</small>
+                  </div>
+                  <select id="default-environment-secondary">
+                    <option value="local">当前工作区</option>
+                    <option value="worktree">独立 Worktree</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>Claude Code 可执行文件</b
+                    ><small id="settings-environment-claude">正在检测</small>
+                  </div>
+                  <div class="path-setting-control">
+                    <input
+                      id="claude-executable-setting"
+                      placeholder="留空自动检测"
+                    /><button
+                      type="button"
+                      class="setting-action"
+                      id="pick-claude-executable"
+                    >
+                      选择
+                    </button><button
+                      type="button"
+                      class="setting-action"
+                      id="redetect-claude"
+                    >
+                      重新检测
+                    </button>
+                  </div>
+                </div>
+                <div class="settings-explainer">
+                  <b>自动检测范围</b>
+                  <p>
+                    会依次尝试：此处手动填写的路径 → PATH 与 where 查找 →
+                    %USERPROFILE%\.local\bin → %APPDATA%\npm（npm 全局安装的
+                    claude.cmd）→ %USERPROFILE%\.bun\bin
+                    → %LOCALAPPDATA%\Programs\claude。找到后立即生效，无需重启。
+                  </p>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="worktrees"
+            >
+              <div class="settings-heading">
+                <h3>Worktrees</h3>
+                <p>隔离任务目录</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>默认 Worktree 模式</b
+                    ><small
+                      >为新任务创建 detached Worktree，避免修改主工作区</small
+                    >
+                  </div>
+                  <select id="default-environment-worktree">
+                    <option value="local">当前工作区</option>
+                    <option value="worktree">独立 Worktree</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>当前仓库 Worktree</b
+                    ><small id="worktrees-summary">正在扫描</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action primary-action"
+                    id="worktrees-add"
+                  >
+                    ＋ 新建 Worktree
+                  </button>
+                </div>
+                <div id="worktrees-list" class="worktrees-list">
+                  <div class="muted">选择项目后显示 Worktree</div>
+                </div>
+                <div id="worktree-editor" class="worktree-editor hidden">
+                  <div class="setting-row">
+                    <div>
+                      <b>分支名</b
+                      ><small>已存在则直接检出，否则新建（基于基线）</small>
+                    </div>
+                    <input
+                      id="worktree-branch"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="setting-row">
+                    <div>
+                      <b>基线（可选）</b
+                      ><small>留空使用当前 HEAD，可填分支名或提交哈希</small>
+                    </div>
+                    <input
+                      id="worktree-base"
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                  </div>
+                  <div class="setting-row">
+                    <div class="api-form-actions">
+                      <button
+                        type="button"
+                        class="setting-action primary-action"
+                        id="worktree-create"
+                      >
+                        创建
+                      </button>
+                      <button type="button" class="setting-action" id="worktree-cancel">
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="settings-explainer">
+                  <b>清理策略</b>
+                  <p>
+                    Worktree 不会静默删除；有未提交改动时移除会失败，需要先提交或手动处理。
+                  </p>
+                </div>
+              </div>
+            </section>
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="appearance"
+            >
+              <div class="settings-heading">
+                <h3>外观</h3>
+                <p>主题、字体、密度和缩放</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div><b>主题</b><small>跟随系统，或固定浅色/深色</small></div>
+                  <select id="theme-setting">
+                    <option value="system">跟随系统</option>
+                    <option value="light">浅色</option>
+                    <option value="dark">深色</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>界面字体</b><small>应用于聊天、菜单和设置界面</small>
+                  </div>
+                  <select id="font-setting">
+                    <option value="system">系统字体</option>
+                    <option value="yahei">微软雅黑</option>
+                    <option value="serif">衬线字体</option>
+                    <option value="mono">等宽字体</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>基础字号</b><small>独立于页面缩放调整文字大小</small>
+                  </div>
+                  <select id="font-size-setting">
+                    <option value="12">12 px</option>
+                    <option value="13">13 px</option>
+                    <option value="14">14 px</option>
+                    <option value="15">15 px</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>界面密度</b><small>调整列表和设置项的垂直间距</small>
+                  </div>
+                  <select id="density-setting">
+                    <option value="comfortable">舒适</option>
+                    <option value="compact">紧凑</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>界面缩放</b><small>保持所有区域完整适配窗口</small>
+                  </div>
+                  <div class="zoom-controls">
+                    <button type="button" id="zoom-out">−</button
+                    ><span id="zoom-value">100%</span
+                    ><button type="button" id="zoom-in">＋</button>
+                  </div>
+                </div>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>减少动态效果</b><small>关闭脉冲、过渡和滚动动画</small>
+                  </div>
+                  <input type="checkbox" id="reduce-motion-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>默认展开思考过程</b
+                    ><small>完成后自动展开 Claude 的思考卡片</small>
+                  </div>
+                  <input type="checkbox" id="show-thinking-setting"
+                /></label>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="notifications"
+            >
+              <div class="settings-heading">
+                <h3>通知</h3>
+                <p>任务完成与权限请求提醒</p>
+              </div>
+              <div class="settings-card">
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>任务完成通知</b
+                    ><small>任务完成或失败时显示 Windows 通知</small>
+                  </div>
+                  <input type="checkbox" id="notifications-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>通知声音</b
+                    ><small>允许 Windows 为完成通知播放声音</small>
+                  </div>
+                  <input type="checkbox" id="notification-sound-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>窗口前台时也通知</b
+                    ><small>即使正在查看工作台也显示完成通知</small>
+                  </div>
+                  <input type="checkbox" id="notify-focused-setting"
+                /></label>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>原生权限审批小窗</b
+                    ><small
+                      >在屏幕右下角显示“批准/拒绝”；关闭后只使用会话内审批卡片</small
+                    >
+                  </div>
+                  <input type="checkbox" id="native-approval-setting"
+                /></label>
+              </div>
+            </section>
+
+            <section class="settings-panel hidden" data-settings-panel="agent">
+              <div class="settings-heading">
+                <h3>模型与思考</h3>
+                <p>新会话的 Claude Code 默认值</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>默认模型</b
+                    ><small>可跟随 CC Switch 映射，或选择 Claude 模型族</small>
+                  </div>
+                  <select id="default-model-setting">
+                    <option value="">跟随 CC Switch</option>
+                    <option value="sonnet">Sonnet</option>
+                    <option value="opus">Opus</option>
+                    <option value="haiku">Haiku</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>思考强度</b
+                    ><small
+                      >通过 Agent SDK effort
+                      参数控制；不支持的模型会自动降级</small
+                    >
+                  </div>
+                  <select id="default-effort-setting">
+                    <option value="inherit">跟随服务配置</option>
+                    <option value="low">低</option>
+                    <option value="medium">中</option>
+                    <option value="high">高</option>
+                    <option value="xhigh">很高</option>
+                    <option value="max">最大</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>最大轮数</b
+                    ><small
+                      >单次任务允许的最大 agent 轮数，0 表示不额外限制</small
+                    >
+                  </div>
+                  <select id="max-turns-setting">
+                    <option value="0">不额外限制</option>
+                    <option value="10">10 轮</option>
+                    <option value="20">20 轮</option>
+                    <option value="50">50 轮</option>
+                    <option value="100">100 轮</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>当前会话</b
+                    ><small id="current-session-setting-status"
+                      >尚未选择会话</small
+                    >
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="apply-defaults-current"
+                  >
+                    应用默认值
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="permissions"
+            >
+              <div class="settings-heading">
+                <h3>权限</h3>
+                <p>控制 Claude Code 如何批准工具操作</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>新会话默认权限</b
+                    ><small>当前会话仍可在输入框底部单独选择</small>
+                  </div>
+                  <select id="default-permission">
+                    <option value="default">手动确认</option>
+                    <option value="acceptEdits">自动接受编辑</option>
+                    <option value="plan">计划模式</option>
+                    <option value="auto">自动模式</option>
+                  </select>
+                </div>
+                <div class="settings-explainer">
+                  <b>模式说明</b>
+                  <p>
+                    <strong>手动确认</strong
+                    >会显示审批；<strong>自动接受编辑</strong>自动允许文件编辑，但敏感工具仍确认；<strong>计划模式</strong>只规划；<strong>自动模式</strong>由
+                    Claude Code 分类器自动允许或拒绝，不弹人工审批。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="api"
+            >
+              <div class="settings-heading">
+                <h3>API 接入</h3>
+                <p>选择走 CC Switch，还是在本应用内直接配置 API</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>API 接入方式</b
+                    ><small>跟随 CC Switch：沿用其当前 Provider；供应商配置：用下方列表中选中的一套地址与密钥</small>
+                  </div>
+                  <select id="api-mode-setting">
+                    <option value="cc-switch">跟随 CC Switch</option>
+                    <option value="profile">供应商配置</option>
+                  </select>
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>供应商列表</b
+                    ><small>点「使用」切换当前供应商；密钥只存本机，不会回显</small>
+                  </div>
+                </div>
+                <div id="api-profile-list" data-api-profiles></div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>快速模板</b
+                    ><small>点击填入名称与地址（Anthropic 兼容端点，以服务商文档为准）</small>
+                  </div>
+                  <div id="api-template-chips" class="api-chips"></div>
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>供应商名称</b
+                    ><small id="api-profile-editing-hint">新增模式</small>
+                  </div>
+                  <input
+                    type="text"
+                    id="api-profile-name"
+                    placeholder="例如 DeepSeek"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>API 地址 (Base URL)</b
+                    ><small>Anthropic 兼容端点</small>
+                  </div>
+                  <input
+                    type="text"
+                    id="api-profile-url"
+                    placeholder="https://api.deepseek.com/anthropic"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>模型映射（可选）</b
+                    ><small>非 Claude 官方供应商通常需要，例如 ANTHROPIC_MODEL=deepseek-chat</small>
+                  </div>
+                  <input
+                    type="text"
+                    id="api-profile-model"
+                    placeholder="deepseek-chat"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>计价货币</b
+                    ><small>额度与用量统计按此货币显示</small>
+                  </div>
+                  <select id="api-profile-currency">
+                    <option value="CNY">人民币 ¥ (CNY)</option>
+                    <option value="USD">美元 $ (USD)</option>
+                  </select>
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>API 密钥</b
+                    ><small id="api-profile-key-status">未配置</small>
+                  </div>
+                  <input
+                    type="password"
+                    id="api-profile-key"
+                    placeholder="sk-..."
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div class="api-form-actions">
+                    <button type="button" class="setting-action primary-action" id="api-profile-save">保存供应商</button>
+                    <button type="button" class="setting-action" id="api-profile-key-save">保存密钥</button>
+                    <button type="button" class="setting-action" id="api-profile-reset">取消编辑</button>
+                    <button type="button" class="setting-action" id="api-profile-export">导出配置（不含密钥）</button>
+                  </div>
+                </div>
+                <div class="setting-row" data-api-profiles>
+                  <div>
+                    <b>密钥存放位置</b
+                    ><small>只写入本机数据目录的 api-auth.json（按供应商分开保存），不会回传给页面，也不会进入会话记录</small>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>生效方式</b
+                    ><small>保存后下一次发送消息即生效，无需重启；切回 CC Switch 时恢复读取其环境变量</small>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="provider"
+            >
+              <div class="settings-heading">
+                <h3>CC Switch</h3>
+                <p>当前 Provider、余额和刷新策略</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>当前服务商</b
+                    ><small id="provider-setting-name">正在检测…</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="refresh-provider-setting"
+                  >
+                    立即刷新
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>可用余额</b
+                    ><small id="provider-setting-balance">等待服务商响应</small>
+                  </div>
+                  <span class="setting-status-dot"></span>
+                </div>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>自动刷新额度</b
+                    ><small>仅在窗口可见时定期查询，不向页面暴露 API Key</small>
+                  </div>
+                  <input type="checkbox" id="usage-auto-refresh-setting"
+                /></label>
+                <div class="setting-row">
+                  <div>
+                    <b>刷新间隔</b><small>支持的余额接口才会发起请求</small>
+                  </div>
+                  <select id="usage-refresh-setting">
+                    <option value="1">每 1 分钟</option>
+                    <option value="5">每 5 分钟</option>
+                    <option value="15">每 15 分钟</option>
+                  </select>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="integrations"
+            >
+              <div class="settings-heading">
+                <h3>MCP 与扩展</h3>
+                <p>扫描 Claude Code 的本机配置，不读取或显示密钥内容</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>MCP 服务器</b
+                    ><small>来自全局、用户和当前项目的去重配置</small>
+                  </div>
+                  <span class="integration-count" id="settings-mcp-count"
+                    >—</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>Claude Skills</b
+                    ><small>全局与当前项目 .claude/skills 目录</small>
+                  </div>
+                  <span class="integration-count" id="settings-skill-count"
+                    >—</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>Hooks</b
+                    ><small
+                      >Claude Code settings.json 中配置的生命周期钩子</small
+                    >
+                  </div>
+                  <span class="integration-count" id="settings-hook-count"
+                    >—</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>插件目录</b><small>Claude 配置目录中的已安装插件</small>
+                  </div>
+                  <span class="integration-count" id="settings-plugin-count"
+                    >—</span
+                  >
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>Claude 配置目录</b
+                    ><small id="settings-claude-config-path">正在扫描…</small>
+                  </div>
+                  <div class="setting-action-group">
+                    <button
+                      type="button"
+                      class="setting-action"
+                      id="refresh-integrations-setting"
+                    >
+                      重新扫描
+                    </button>
+                    <button
+                      type="button"
+                      class="setting-action"
+                      id="open-claude-config-setting"
+                    >
+                      打开目录
+                    </button>
+                  </div>
+                </div>
+                <div class="settings-explainer">
+                  <b>配置方式</b>
+                  <p>
+                    MCP、Skills 与 Hooks 继续使用 Claude Code
+                    标准配置文件，Workbench 不复制或改写密钥。
+                  </p>
+                </div>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>MCP 服务器管理</b
+                    ><small
+                      >添加外部 MCP（stdio 命令或 http
+      地址），写回 Claude Code 用户级配置 ~/.claude.json</small
+                    >
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action primary-action"
+                    id="mcp-add-button"
+                  >
+                    ＋ 添加 MCP
+                  </button>
+                </div>
+                <div id="mcp-server-list" class="mcp-server-list">
+                  <div class="muted">正在扫描…</div>
+                </div>
+                <div id="mcp-editor" class="mcp-editor hidden">
+                  <div class="setting-row">
+                    <div><b>名称</b><small>字母数字与 .-_，如 filesystem</small></div>
+                    <input id="mcp-name" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="setting-row">
+                    <div><b>类型</b><small>stdio = 本地命令；http = 远程地址</small></div>
+                    <select id="mcp-type">
+                      <option value="stdio">stdio（本地命令）</option>
+                      <option value="http">http（远程 URL）</option>
+                    </select>
+                  </div>
+                  <div class="setting-row" id="mcp-command-row">
+                    <div><b>启动命令</b><small>例如 npx -y @modelcontextprotocol/server-filesystem 或 python server.py</small></div>
+                    <input id="mcp-command" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="setting-row" id="mcp-args-row">
+                    <div><b>参数（空格分隔）</b><small>例如 C:\projects 或 --port 3000</small></div>
+                    <input id="mcp-args" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="setting-row hidden" id="mcp-url-row">
+                    <div><b>服务地址</b><small>http(s):// 开头的 MCP 端点</small></div>
+                    <input id="mcp-url" autocomplete="off" spellcheck="false" />
+                  </div>
+                  <div class="setting-row" id="mcp-env-row">
+                    <div><b>环境变量</b><small>每行一个，格式 KEY=value（密钥只写入本机配置，不回显）</small></div>
+                    <textarea id="mcp-env" rows="2" spellcheck="false" placeholder="API_KEY=sk-..."></textarea>
+                  </div>
+                  <div class="setting-row">
+                    <div class="api-form-actions">
+                      <button type="button" class="setting-action primary-action" id="mcp-save">保存 MCP</button>
+                      <button type="button" class="setting-action" id="mcp-cancel">取消</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="settings-explainer">
+                  <b>说明</b>
+                  <p>
+                    项目级 MCP（项目目录 .mcp.json）只读展示；删除仅影响用户级
+                    ~/.claude.json，改写前自动备份为 .claude.json.workbench-bak。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="projects"
+            >
+              <div class="settings-heading">
+                <h3>项目与 Git</h3>
+                <p>工作区、Worktree 和远程仓库</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>新会话默认环境</b
+                    ><small
+                      >直接使用当前目录，或创建隔离的 detached Worktree</small
+                    >
+                  </div>
+                  <select id="default-environment">
+                    <option value="local">当前工作区</option>
+                    <option value="worktree">独立 Worktree</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>当前工作区</b
+                    ><small id="settings-project-path">尚未选择项目</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="settings-reveal-project"
+                  >
+                    在资源管理器中打开
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>Origin 远程仓库</b
+                    ><small id="settings-git-origin">未配置或尚未检测</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="settings-open-github"
+                  >
+                    打开远程
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="terminal"
+            >
+              <div class="settings-heading">
+                <h3>终端</h3>
+                <p>集成终端进程和输出保留</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>Shell</b><small>更改后在下次启动终端时生效</small>
+                  </div>
+                  <select id="terminal-shell-setting">
+                    <option value="system">跟随系统</option>
+                    <option value="cmd">命令提示符</option>
+                    <option value="powershell">Windows PowerShell</option>
+                    <option value="pwsh">PowerShell 7</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>退出终端保留时间</b
+                    ><small>到期后释放进程引用和输出缓存</small>
+                  </div>
+                  <select id="terminal-retention-setting">
+                    <option value="1">1 分钟</option>
+                    <option value="5">5 分钟</option>
+                    <option value="15">15 分钟</option>
+                    <option value="30">30 分钟</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>输出缓存上限</b
+                    ><small>限制每个终端在内存中保留的字符数</small>
+                  </div>
+                  <select id="terminal-output-setting">
+                    <option value="50000">5 万字符</option>
+                    <option value="200000">20 万字符</option>
+                    <option value="500000">50 万字符</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>当前终端</b
+                    ><small id="settings-terminal-state">尚未启动</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="settings-restart-terminal"
+                  >
+                    重新启动
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-panel hidden" data-settings-panel="data">
+              <div class="settings-heading">
+                <h3>数据与隐私</h3>
+                <p>本地记录、保留上限和诊断信息</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>每个会话事件上限</b
+                    ><small
+                      >达到上限后丢弃最旧的界面事件，Claude 底层会话仍由 Claude
+                      Code 管理</small
+                    >
+                  </div>
+                  <select id="history-limit-setting">
+                    <option value="500">500 条</option>
+                    <option value="1000">1,000 条</option>
+                    <option value="2500">2,500 条</option>
+                    <option value="5000">5,000 条</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>本地数据目录</b
+                    ><small id="settings-data-path">正在读取…</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action"
+                    id="settings-open-data"
+                  >
+                    打开目录
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>已归档任务</b
+                    ><small
+                      >删除工作台保存的已归档任务记录，不影响 Claude Code
+                      原始会话</small
+                    >
+                  </div>
+                  <button
+                    type="button"
+                    class="setting-action danger-action"
+                    id="clear-archived-setting"
+                  >
+                    清除归档
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>遥测与上传</b
+                    ><small
+                      >Workbench 不包含独立遥测；项目文件和密钥不会上传到
+                      Workbench 服务</small
+                    >
+                  </div>
+                  <span class="readonly-status">已关闭</span>
+                </div>
+              </div>
+            </section>
+
+            <section
+              class="settings-panel hidden"
+              data-settings-panel="shortcuts"
+            >
+              <div class="settings-heading">
+                <h3>键盘快捷键</h3>
+                <p>当前版本的全局界面快捷键</p>
+              </div>
+              <div class="settings-card shortcut-list">
+                <div class="setting-row">
+                  <div><b>新建任务</b><small>在当前项目创建新会话</small></div>
+                  <button
+                    type="button"
+                    class="shortcut-edit"
+                    data-shortcut="newSession"
+                  >
+                    <kbd>Ctrl+N</kbd>
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div><b>搜索与命令</b><small>打开命令面板</small></div>
+                  <button
+                    type="button"
+                    class="shortcut-edit"
+                    data-shortcut="palette"
+                  >
+                    <kbd>Ctrl+K</kbd>
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>打开设置</b><small>从任意页面进入设置中心</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="shortcut-edit"
+                    data-shortcut="settings"
+                  >
+                    <kbd>Ctrl+,</kbd>
+                  </button>
+                </div>
+                <div class="setting-row">
+                  <div><b>切换全屏</b><small>Esc 也可退出全屏</small></div>
+                  <kbd>F11</kbd>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>发送消息</b><small>Shift + Enter 插入换行</small>
+                  </div>
+                  <kbd>Enter</kbd>
+                </div>
+                <div class="settings-explainer">
+                  <b>修改快捷键</b>
+                  <p>
+                    点击右侧按键进入录制：按下新的组合键即保存，按 Esc
+                    取消，按 Backspace 恢复默认。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-panel hidden" data-settings-panel="about">
+              <div class="settings-heading">
+                <h3>关于</h3>
+                <p>版本、运行时和能力边界</p>
+              </div>
+              <div class="settings-card">
+                <div class="setting-row">
+                  <div>
+                    <b>CCDPH</b
+                    ><small>Claude Code 中文桌面工作台，支持外接 Anthropic 兼容 API</small>
+                  </div>
+                  <span id="settings-app-version">0.3.0</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>Claude Code</b
+                    ><small id="settings-claude-path">正在检测可执行文件</small>
+                  </div>
+                  <span id="settings-claude-version">—</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>运行架构</b
+                    ><small
+                      >Electron Renderer → 本地 Node 服务 → Claude Agent SDK →
+                      CC Switch</small
+                    >
+                  </div>
+                  <span class="readonly-status">仅本机</span>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>检查更新</b
+                    ><small id="update-check-status"
+                      >填写更新源后可检查新版本</small
+                    >
+                  </div>
+                  <div class="setting-action-group">
+                    <button
+                      type="button"
+                      class="setting-action"
+                      id="check-update"
+                    >
+                      检查更新
+                    </button
+                    ><button
+                      type="button"
+                      class="setting-action hidden"
+                      id="install-update"
+                    >
+                      下载并安装
+                    </button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <b>更新源地址</b
+                    ><small
+                      >指向一个 latest.json（含 version / url 字段）的
+                      http(s) 直链</small
+                    >
+                  </div>
+                  <div class="path-setting-control">
+                    <input
+                      id="update-manifest-setting"
+                      placeholder="https://example.com/workbench/latest.json"
+                    />
+                  </div>
+                </div>
+                <label class="setting-row toggle-row"
+                  ><div>
+                    <b>启动时自动检查更新</b
+                    ><small>仅提示有新版本，不会自动下载安装</small>
+                  </div>
+                  <input type="checkbox" id="auto-update-setting"
+                /></label>
+                <div class="settings-explainer">
+                  <b>更新方式</b>
+                  <p>
+                    把新版打包 zip 和一个 latest.json 放到任意可公开访问的
+                    http(s) 地址（GitHub Release、对象存储均可），填入更新源即可。
+                    安装时会自动下载、替换程序文件并重启；任务数据保存在
+                    .data 目录，不受更新影响。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <div class="settings-no-results hidden" id="settings-no-results">
+              没有匹配的设置
+            </div>
+          </main>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="command-dialog" class="command-dialog">
+      <label
+        ><span data-icon="search"></span
+        ><input id="command-input" placeholder="搜索任务、项目、文件或命令"
+      /></label>
+      <div id="command-results"></div>
+      <footer>↑↓ 选择　Enter 打开　Esc 关闭</footer>
+    </dialog>
+    <dialog id="preview-dialog" class="preview-dialog">
+      <header>
+        <div>
+          <strong id="preview-title"></strong><small id="preview-meta"></small>
+        </div>
+        <div>
+          <button id="reveal-file">在资源管理器中显示</button
+          ><button data-close="preview-dialog">
+            <span data-icon="x"></span>
+          </button>
+        </div>
+      </header>
+      <pre id="preview-content"></pre>
+      <form id="diff-feedback" class="diff-feedback hidden">
+        <input
+          id="diff-feedback-input"
+          placeholder="告诉 Claude 如何修改这个文件…"
+        /><button type="submit">发送反馈</button>
+      </form>
+    </dialog>
+    <dialog id="confirm-dialog" class="modal compact-modal">
+      <form id="confirm-form" method="dialog">
+        <h2 id="confirm-title">确认操作</h2>
+        <p id="confirm-message" class="confirm-message"></p>
+        <footer>
+          <button type="button" data-close="confirm-dialog">取消</button
+          ><button type="submit" class="primary">确认</button>
+        </footer>
+      </form>
+    </dialog>
+    <div
+      id="approval-dock"
+      class="approval-dock hidden"
+      aria-live="assertive"
+    ></div>
+    <div class="toast hidden" id="toast" role="status"></div>
+    <div
+      class="context-menu hidden"
+      id="session-context-menu"
+      role="menu"
+    ></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

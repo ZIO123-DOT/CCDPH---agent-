@@ -1,0 +1,21 @@
+{
+  "name": "ccdph",
+  "version": "0.3.1",
+  "type": "module",
+  "main": "desktop.cjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node tests/run.mjs",
+    "check": "node tests/syntax-check.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.268",
+    "@highlightjs/cdn-assets": "^11.12.0",
+    "@playwright/mcp": "0.0.80",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "dompurify": "^3.3.0",
+    "marked": "^17.0.0",
+    "playwright": "1.63.0"
+  }
+}
