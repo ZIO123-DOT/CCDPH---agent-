@@ -299,3 +299,45 @@
   `{ok:true,stopped:false}`；MCP 凭据 env 带出明文落盘告警且**未写入真实 `~/.claude.json`**；
   `state.json` 读取失败时读接口仍 200、写接口 400、原文件（含内容）零改动、不生成 `.corrupt-*`。
 
+
+## R10 独立复审第二轮整改索引（2026-09-28）
+
+> 依据：`CCDPH-前端独立深审报告-20260928-第二次.md`（0×P0 / 0×P1 / 4×P2 / 11×P3）。
+> 代码内标记写作 `R3-P2-x` / `R3-P3-x`。随 **v0.3.5** 发布（`package.json` 0.3.4 → 0.3.5）。
+
+- 渲染守卫：`public/markdown-renderer.js` 的 `countInlineTokens` 改为「按代价计数」
+  （`* _ ` ~` 各计 1 + 成对链接 `[...](...)` 取 min(`[`, `](`)），阈值 4000 / 流式 1500；
+  实测 `` `a ``×60000 从 1041ms 降到 0.6ms，真实代码/散文不再被误降级；`markdownFallback`
+  带可见说明与截断提示（`style.css` 补 `.markdown-fallback-note`）。
+- 终端代际：`public/app.js` `startTerminalOnce` 在 await 前后比对 `navigationRevision`，
+  导航后丢弃并 stop 迟到终端；`terminalRoot` 取请求时快照。
+- 设置并发：`server.mjs` `/api/settings` 的 commit 以提交时刻 `db.settings` 为基底重建，
+  不再覆盖 await 期间的 `recordDailyUsage` 等并发写入。
+- 清单：`scripts/generate-runtime-integrity.mjs` 纳入 playwright/playwright-core/@playwright 的
+  可执行文件面（.js/.cjs/.mjs/.json/.wasm，共 151 条，清单 44 → 196）；`walk` 与依赖枚举遇符号链接
+  抛错（不再静默跳过）。
+- 符号链接口径：`server.mjs` 新增 `statRegularFileNoSymlink`，`/api/skills` 的 SKILL.md 与项目
+  `.mcp.json`（server.mjs + routes/integration.mjs）读前拒绝符号链接。
+- 载入校验：`normalizeLoadedSettings` 覆盖 `settings.browser.*`（isValidPort / mode 枚举 /
+  imageResponses 枚举 / origin 字符白名单 `isValidOriginEntry`），写入与载入同一套规则。
+- 失败关闭：class 剥离的 `catch` 分支改为「禁用 class 的 DOMPurify 重净化」；图片 `type` 渲染侧白名单
+  （`imagePreviewUrl`）。
+- 客户端重入：`connectSession` 增加 `sessionStreamSeq` 序号，孤儿 EventSource 不再可能。
+- 请求闸门：`route()` 拒绝重复 Host 头（rawHeaders 计数）与绝对形式请求行。
+- Electron：`trustedSender` 先判主框架；审批小窗改最小 preload `preload-approval.cjs`。
+- a11y：仅图标按钮补 `aria-label`、隐藏原生 select `tabindex="-1"`、`role=menu` 补 `aria-label`。
+
+### 本轮验证
+
+- `node tests/syntax-check.mjs` → `syntax ok: 60 files`
+- `npm test` → 45/45（新增 6 个模块：markdown-guard / settings-load-validation / symlink-guards /
+  request-gate-hardening / integrity-manifest / a11y-dom）
+- `node tests/api-tests.mjs` → 69/69（T-05/T-06 增补 `stopped`/`reason` 断言）
+- `node tests/gate.mjs` → 8/8 GO（需 `--allow-blind-spots`，唯一盲区仍为 packaged-signature-fallback）
+- 真机复核（真实 Edge）：`` `a ``×60000 渲染 1041ms → 0.6ms；22 组 XSS 载荷 0 执行；重复 Host /
+  absolute-form 请求行 → 403。
+
+### 有意保留（未改）
+
+- `/api/terminal/stop` 对未知 id 仍回 200（幂等契约，T-06 锁定；已如实回 `stopped:false`）。
+- 清单无法自校验、`stopDedicatedEdge` 的 PID TOCTOU、签名验证失败仅告警 —— 与 R9 一致，属已声明边界。

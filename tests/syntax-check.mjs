@@ -23,6 +23,7 @@ const explicitFiles = [
   "desktop.cjs",
   "credential-protector.mjs",
   "preload.cjs",
+  "preload-approval.cjs",
   "scripts/generate-runtime-integrity.mjs",
   "public/app.js",
   "public/api-client.js",

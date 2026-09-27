@@ -64,7 +64,13 @@ const settledApprovalWindows = new WeakSet();
 // IPC 发送方校验：只接受主窗口（受信 origin）或审批小窗（data:text/html 页面）。
 // 审批小窗本身就是用 data: URL 载入的，必须仍然能提交。
 function trustedSender(event) {
-  const url = event.senderFrame?.url || "";
+  // CCDPH-FIX(R3-P3-15): 原来先判 origin、后判"是否主框架"，于是同源**子帧**会在第 1 步就
+  // 被放行。虽然当前应用既不允许 iframe（DOMPurify 默认标签表不含它）也不创建子帧，但把
+  // 帧校验提到最前，保证"只有主框架（或已登记的审批小窗）"这一前提先成立，再谈来源。
+  const frame = event.senderFrame;
+  if (!frame || (event.sender.mainFrame && frame !== event.sender.mainFrame))
+    return false;
+  const url = frame.url || "";
   // 1) 主窗口 / 本地服务同源页面
   try {
     if (new URL(url).origin === trustedOrigin) return true;
@@ -72,7 +78,6 @@ function trustedSender(event) {
   // CCDPH-FIX(D4): 原实现只判断 URL 是否以 "data:text/html" 开头，等于放行渲染层自己
   // window.open 出来的任意 data: 页面。收紧为：必须是**已登记的审批小窗**且在 mainFrame
   //（小窗在 showApprovalWindow 创建时写入 approvalWindows）。
-  if (event.senderFrame !== event.sender.mainFrame) return false;
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
   if (!senderWindow) return false;
   for (const win of approvalWindows.values()) if (win === senderWindow) return true;
@@ -493,7 +498,11 @@ else {
           show: false,
           backgroundColor: "#00000000",
           webPreferences: {
-            preload: path.join(__dirname, "preload.cjs"),
+            // CCDPH-FIX(R3-P3-15): 审批小窗此前共用主窗的 preload.cjs —— 也就是说它拿到了
+            // 主窗全套桥（toggleFullscreen / quitForUpdate / approvalResolved / 各事件订阅）。
+            // 小窗实际只需要 `workbenchApproval.submit`。改为最小 preload，把"如果小窗里出现
+            // 任何脚本执行"的爆炸半径压到最小（不能退出应用、不能替主窗解决审批）。
+            preload: path.join(__dirname, "preload-approval.cjs"),
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: true,

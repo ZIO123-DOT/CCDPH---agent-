@@ -52,6 +52,13 @@ const REQUIRED_MODULE_MARKERS = [
   "resource limits ok",
   "renderer behavior ok",
   "offline checks passed",
+  // CCDPH-FIX(R3): 独立复审第二轮修复的回归护栏
+  "markdown guard ok",
+  "settings load validation ok",
+  "symlink guards ok",
+  "request gate hardening ok",
+  "integrity manifest ok",
+  "a11y ok",
 ];
 // 安全用例：必须**真的跑过**才算通过。自我 skip 只记录为「盲区」，绝不再当成满足条件。
 // CCDPH-FIX(R2-P2-11): 原来这两条被塞进 OPTIONAL_MODULE_MARKERS 并只要求

@@ -984,6 +984,28 @@ summary,
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
 }
+/* CCDPH-FIX(R3-P2-2): 纯文本降级以前是"裸 <pre>"，用户不知道内容被降级、也不知道被截断。
+   这里给降级预览配一条说明条 + 与代码块一致的容器。 */
+.markdown-fallback {
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--code);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.markdown-fallback-note {
+  padding: 7px 12px;
+  border-radius: 8px 8px 0 0;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+  color: var(--muted, #6b6b66);
+  font-size: 11px;
+  line-height: 1.5;
+}
 .markdown :not(pre) > code {
   padding: 2px 5px;
   border-radius: 4px;

@@ -1801,6 +1801,15 @@ export function setCredentialProtector(protector) {
 // CCDPH-FIX(F-13): 形如凭据的环境变量名（*_TOKEN / *_API_KEY / *_AUTH* / *_SECRET* /
 // *_PASSWORD）一律不允许出现在 profile.env —— 那条通道会被写进 state.json 并回传页面。
 const CREDENTIAL_ENV_KEY_RE = /(_TOKEN|_API_KEY|_AUTH|_SECRET|_PASSWORD)/;
+// CCDPH-FIX(R3-P3-11): 浏览器域名的允许字符集。这些值会被 `;` 拼进命令行参数交给
+// @playwright/mcp 解析（本进程是 argv 数组、无 shell，注入不进 shell，但下游怎么解析不由
+// 我们控制，且 CR/LF/引号/`;` 本身也不该出现在域名里）。写入与**载入**两条路径共用它。
+const ORIGIN_PATTERN_RE = /^[A-Za-z0-9*._:/[\].-]+$/;
+const isValidOriginEntry = (value) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  !value.startsWith("-") &&
+  ORIGIN_PATTERN_RE.test(value);
 async function loadApiAuth() {
   try {
     const stored = JSON.parse(
@@ -2404,6 +2413,30 @@ async function readJsonFile(filename) {
     return {};
   }
 }
+// CCDPH-FIX(R3-P3-3/R3-P3-4): 项目目录里的文件（技能的 SKILL.md、项目的 .mcp.json）必须
+// **不跟随符号链接**。原来只对符号链接**目录**做了排除（listSkills 里的 entry.isSymbolicLink()），
+// 文件侧没有 —— 于是可以在项目里放一个指向项目外文件的符号链接，把该文件的首个
+// `description:`/`# ` 行（≤120 字符）当作技能描述、或把外部 MCP 的 command/args/env 键名
+// 通过 API 回传出来（两种都实测复现过）。其它读路径（/api/file、/api/files、/api/diff）
+// 走的是 safePath 的 realpath + 包含校验，这里是最小口径对齐。
+async function statRegularFileNoSymlink(file) {
+  let info;
+  try {
+    info = await fs.lstat(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  if (info.isSymbolicLink()) {
+    console.warn("[ccdph] 已拒绝读取指向外部位置的符号链接:", file);
+    return null;
+  }
+  return info.isFile() ? info : null;
+}
+async function readProjectJsonFileNoSymlink(file) {
+  if (!(await statRegularFileNoSymlink(file))) return {};
+  return readJsonFile(file);
+}
 const CONFIG_JSON_MAX_BYTES = 16 * 1024 * 1024;
 const INTEGRATION_DIRECTORY_MAX = 1000;
 const SKILL_CANDIDATE_MAX = 200;
@@ -2437,7 +2470,7 @@ async function getIntegrationInfo(root) {
     readJsonFile(path.join(os.homedir(), ".claude.json")),
     readJsonFile(path.join(os.homedir(), ".mcp.json")),
     readJsonFile(path.join(CLAUDE_CONFIG_DIR, "settings.json")),
-    root ? readJsonFile(path.join(root, ".mcp.json")) : {},
+    root ? readProjectJsonFileNoSymlink(path.join(root, ".mcp.json")) : {},
     countDirectories(path.join(CLAUDE_CONFIG_DIR, "skills")),
     root ? countDirectories(path.join(root, ".claude", "skills")) : 0,
     countDirectories(path.join(CLAUDE_CONFIG_DIR, "plugins")),
@@ -2494,11 +2527,12 @@ async function listSkills(root, query = "") {
   await Promise.all(candidates.map(async ({ name, folder, source }) => {
     let description = "Claude Code Skill";
     try {
+      const skillFile = path.join(folder, name, "SKILL.md");
+      // CCDPH-FIX(R3-P3-3): 与目录侧的 entry.isSymbolicLink() 同口径 —— 文件侧的符号链接
+      // 同样拒绝（否则项目里一个指向外部的 SKILL.md 就能把该文件的内容当描述回传）。
+      if (!(await statRegularFileNoSymlink(skillFile))) throw new Error("跳过符号链接/非普通文件");
       const text = (
-        await readStableBoundedFile(
-          path.join(folder, name, "SKILL.md"),
-          SKILL_FILE_MAX_BYTES,
-        )
+        await readStableBoundedFile(skillFile, SKILL_FILE_MAX_BYTES)
       ).toString("utf8");
       const heading = text.match(/^#\s+(.+)$/m)?.[1]?.trim();
       const frontmatter = text.match(/^description:\s*(.+)$/m)?.[1]?.trim();
@@ -4258,6 +4292,8 @@ function buildNextSettings(input, current) {
         cur[key] = b[key]
           .filter((value) => typeof value === "string")
           .map((value) => value.trim().slice(0, 200))
+          // CCDPH-FIX(R3-P3-11): 字符白名单（见 isValidOriginEntry 的说明）。
+          .filter(isValidOriginEntry)
           .slice(0, 50);
     if (["allow", "omit"].includes(b.imageResponses))
       cur.imageResponses = b.imageResponses;
@@ -4352,6 +4388,29 @@ function normalizeLoadedSettings(settings) {
     DEFAULT_SETTINGS.historyLimit,
   );
   settings.usageDaily = normalizeUsageDaily(settings.usageDaily);
+  // CCDPH-FIX(R3-P3-5): browser.* 此前**只在写入时**校验（buildNextSettings 用 isValidPort /
+  // mode 枚举），而 state.json 是本地可写文件 —— 直接改它就能让 dedicatedPort 变成 80 或
+  // 任意整数，随后 cdpEndpointFromSettings / buildPlaywrightMcpConfig 会带着它去连
+  // `http://127.0.0.1:<port>`（仍限 loopback，但口径必须一致）。载入时按同一套规则收口。
+  const browser = { ...structuredClone(DEFAULT_SETTINGS.browser) };
+  if (settings.browser && typeof settings.browser === "object" && !Array.isArray(settings.browser)) {
+    const raw = settings.browser;
+    if (typeof raw.enabled === "boolean") browser.enabled = raw.enabled;
+    if (["attach", "dedicated"].includes(raw.mode)) browser.mode = raw.mode;
+    if (isValidPort(raw.dedicatedPort)) browser.dedicatedPort = raw.dedicatedPort;
+    if (typeof raw.profileDir === "string")
+      browser.profileDir = raw.profileDir.trim().slice(0, 300);
+    if (["allow", "omit"].includes(raw.imageResponses))
+      browser.imageResponses = raw.imageResponses;
+    for (const key of ["allowOrigins", "blockOrigins"])
+      if (Array.isArray(raw[key]))
+        browser[key] = raw[key]
+          .filter((value) => typeof value === "string")
+          .map((value) => value.trim().slice(0, 200))
+          .filter(isValidOriginEntry)
+          .slice(0, 50);
+  }
+  settings.browser = browser;
 }
 // CCDPH-FIX(R2-P2-12b): MCP_FILE 已提到模块作用域（见文件上方的 CLAUDE_CONFIG_DIR），
 // 不再在这里写死 os.homedir()。
@@ -4610,6 +4669,7 @@ const routeIntegrationDomain = createIntegrationRoute({
   json,
   mcpWriteQueue,
   readJsonFile,
+  readProjectJsonFileNoSymlink,
   readMcpDoc,
   readSettingsJsonStrict,
   requireObject,
@@ -5257,8 +5317,20 @@ async function routeSessionDomain(req, res, url, pathname) {
 
 
 async function route(req, res) {
+  // CCDPH-FIX(R3-P3-15): 旧实现只读 `req.headers.host`，而 Node 遇到**重复 Host 头**时只取
+  // 第一个 —— 于是 `Host: 127.0.0.1:<port>\r\nHost: evil.example` 能通过来源校验（实测 200）。
+  // 同样，**绝对形式请求行**（`GET http://evil.example/api/... HTTP/1.1`）会被 Node 原样塞进
+  // req.url，旧代码的 `new URL(req.url, origin)` 取的是 URL 里的 authority，等于绕过了 Host 校验。
+  // 浏览器都不会发这两种请求（Host 是禁止头、请求行恒为 origin-form），所以这属纵深防御 ——
+  // 但既然来源校验是这套本地服务的唯一信任边界，就把这两个口子也堵上。
+  const hostOccurrences = (req.rawHeaders || [])
+    .map((value, index) => ({ value, index }))
+    .filter(({ index }) => index % 2 === 0)
+    .filter(({ value }) => value.toLowerCase() === "host").length;
   if (
     req.headers.host !== `127.0.0.1:${port}` ||
+    hostOccurrences > 1 || // 重复 Host 头一律拒绝
+    /^(https?:)?\/\//i.test(req.url) || // 绝对形式请求行一律拒绝
     (req.headers.origin && req.headers.origin !== origin)
   )
     return json(
@@ -5352,9 +5424,9 @@ async function route(req, res) {
     const input = requireObject(await body(req));
     return await settingsWriteQueue(async () => {
       const previousSettings = db.settings;
-      const nextSettings = buildNextSettings(input, previousSettings);
-      const claudeExecutableChanged =
-        nextSettings.claudeExecutable !== previousSettings.claudeExecutable;
+      // CCDPH-FIX(R3-P2-4): 这里构建的克隆只用于**与浏览器运行时协商**（reconcile 需要知道
+      // 目标值），真正的提交发生在 commit 里、并会以提交时刻的 db.settings 为基底重建。
+      const negotiated = buildNextSettings(input, previousSettings);
       const migrateToCcSwitch = input.apiMode === "cc-switch";
       const sessionMetadata = migrateToCcSwitch
         ? db.sessions.map((s) => ({
@@ -5366,10 +5438,19 @@ async function route(req, res) {
         : [];
       await withBrowserSettingsTransition({
         previous: previousSettings.browser,
-        next: nextSettings.browser,
+        next: negotiated.browser,
         reconcile: reconcileBrowserRuntime,
         commit: async () => {
-          db.settings = nextSettings;
+          // CCDPH-FIX(R3-P2-4): `await reconcileBrowserRuntime()` 可能启停 Edge（秒级 I/O）。
+          // 在这段时间里仍然可以发生**不经过 settingsWriteQueue** 的写入 —— 最典型的是
+          // recordDailyUsage（轮次结果消息里直接改 db.settings.usageDaily）。
+          // 旧实现把 await 之前构建的克隆整体赋回 db.settings，于是那些并发更新被静默丢掉
+          // （实测：用量图表少记一次；settings 保存越慢越容易丢）。
+          // 现在以**提交时刻**的 db.settings 为基底重建，只把本次协商过的 browser 段覆盖回去；
+          // 本次请求要改的字段仍由 buildNextSettings(input, ...) 从 input 取，语义不变。
+          const committed = buildNextSettings(input, db.settings);
+          committed.browser = negotiated.browser;
+          db.settings = committed;
           if (migrateToCcSwitch) migrateSessionsTo("cc-switch", "");
           await save();
         },
@@ -5387,9 +5468,9 @@ async function route(req, res) {
             error?.message || error,
           ),
       });
-      if (nextSettings.apiMode !== previousSettings.apiMode)
+      if (db.settings.apiMode !== previousSettings.apiMode)
         invalidateProviderUsageCache();
-      if (claudeExecutableChanged)
+      if (db.settings.claudeExecutable !== previousSettings.claudeExecutable)
         setImmediate(() => void redetectClaude());
       return json(res, {
         ...publicSettings(),

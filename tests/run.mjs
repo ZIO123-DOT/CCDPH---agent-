@@ -151,4 +151,47 @@ const mcpSaveName = await runFile(
 );
 process.stdout.write(mcpSaveName.stdout);
 process.stderr.write(mcpSaveName.stderr);
+// ---- R3（独立复审第二轮）修复回归 ----
+const markdownGuard = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./markdown-guard.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(markdownGuard.stdout);
+process.stderr.write(markdownGuard.stderr);
+const settingsLoadValidation = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./settings-load-validation.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(settingsLoadValidation.stdout);
+process.stderr.write(settingsLoadValidation.stderr);
+const symlinkGuards = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./symlink-guards.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(symlinkGuards.stdout);
+process.stderr.write(symlinkGuards.stderr);
+const requestGateHardening = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./request-gate-hardening.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(requestGateHardening.stdout);
+process.stderr.write(requestGateHardening.stderr);
+const integrityManifest = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./integrity-manifest.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(integrityManifest.stdout);
+process.stderr.write(integrityManifest.stderr);
+const a11yDom = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./a11y-dom.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(a11yDom.stdout);
+process.stderr.write(a11yDom.stderr);
 console.log("offline checks passed");

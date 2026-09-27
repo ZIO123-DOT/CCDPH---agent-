@@ -42,41 +42,71 @@ const NEST_GUARD = /(^|\n)[ \t]*(?:>[ \t]*){300,}/;
 // 所以合法 markdown 仍然正常走 marked，只有畸形长串降级为纯文本。
 // 注意：`---` 不在字符类内，水平线规则不受影响；`***` 也远小于阈值。
 const DELIMITER_RUN_GUARD = /[*_~`]{300,}/;
-// CCDPH-FIX(AUDIT-1): 上面两条 guard 只认「连续 ≥300 个同种定界符」，而 marked 的内联词法器对
-// **散落**的 `*` / `_` 是二次复杂度 —— 实测（marked 17.0.6，页面加载的同一份构建）90KB 的 C 代码
-// （`int *p = &x; /* note */ _v = *w;`，约 14000 个定界符）单次解析 >6s，50KB 同类文本 2.5s；
-// 代价随定界符数 n 约按 6e-5·n² 增长（n=800→17ms、1365→40ms、3413→226ms、6827→1.5s），
-// 与定界符是连续还是散落无关，所以「连续串」预检永远命中不了它。
-// 这里补一条「定界符计数」预检：单趟 charCodeAt 计数、超限立刻返回，最坏 O(n) 且实测
-// 200KB 输入只要 2~8ms（不是 ReDoS，也不会成为主要开销）。阈值 1500 对应的最坏解析代价约
-// 0.15~0.25s（每条文本只付一次，之后进 markdownCache），而正常文档离它很远：README 级别
-// 只有几十个定界符，20KB 网络文案为 0，含大量 `**粗体**`/`*斜体*`/表格/围栏的回复也只有几百。
-const DELIMITER_CHARS_LIMIT = 1500;
-// CCDPH-FIX(AUDIT-1): 流式路径（assistantMessage(..., true) → markdown(text, false)）不写缓存，
-// 每 120ms 就用「更长的前缀」整段重排一次，单帧必须远小于这个间隔，所以给它更紧的一套预算：
-// 计数上限 600（最坏约 30ms）+ 长度上限 20000（纯文本 20KB 解析仅 0.5ms，但 marked+DOMPurify
-// 的 DOM 代价随长度线性增长）。超限时流式预览先降级为纯文本；最终 `text` 事件会经
-// appendEventNode 以非 live 模式完整渲染 markdown，done 只做定点收尾。
-const LIVE_DELIMITER_CHARS_LIMIT = 600;
+// CCDPH-FIX(R3-P2-1/R3-P2-2): 原来的「定界符计数」按 **字符种类** 计数（只认 `*`=42 与
+// `_`=95），于是两头都错：
+//   漏 —— 散落的 `` ` ``(96) 与 `~`(126) 完全不被计数，实测 120,000 字符的 `` `a `` 在真实
+//         Edge 里让 markdown() 阻塞 **1041ms**（Node 复核 1542ms），守卫形同虚设；
+//   误 —— `*`/`_` 阈值 1500 过紧，而真实代码里 `_`（snake_case）极常见，导致正文被**静默**
+//        降级成纯文本（旧实现还顺带把 10 万字符以外的内容静默截掉）。
+// 现在改为「按代价计数」：
+//   · 内联强调/代码/删除线四类定界符 `* _ ` ~` 各计 1；
+//   · 链接/图片候选计 min(『[』的个数, 『](』的个数) —— 单测表明 `[` 单独出现（38ms/12万）
+//     与 `](` 单独出现（4.7ms/12万）都只是线性开销，只有**成对**结构才二次爆炸；
+//   · 取两类计数的 **较大值** 作为预算判据（两类各自独立扫描，代价由更贵的一类主导）。
+// 阈值由实测曲线反推（marked 17.0.6，字符数 → 解析耗时）：
+//   ` 4000→9ms  8000→30ms  16000→107ms  30000→354ms  60000→1467ms
+//   _ 4000→24ms 8000→95ms  16000→368ms  30000→1335ms 60000→5042ms
+//   [a](x) 4000→25ms 8000→97ms 16000→367ms 30000→2895ms
+// 取 4000 时最坏约 25~30ms；旧值 1500 对应最坏只有几毫秒（此前的注释高估了 10~50 倍），
+// 白白牺牲了大量正常内容。提升到 4000 后，真实文本基本不会再被误伤：按实测密度，
+// server.mjs(5.7/KB) 要 700KB、purify.es.mjs(16.7/KB) 要 240KB 才会触发，都超过单条事件
+// 上限（120,000 字符）；只有极端重复/混淆文本才会命中。
+const INLINE_TOKEN_LIMIT = 4000;
+// CCDPH-FIX(AUDIT-1) 保留：流式路径（assistantMessage(..., true) → markdown(text, false)）不写
+// 缓存、每 120ms 用更长前缀整段重排一次，单帧必须远小于这个间隔，所以给它更紧的预算：
+// 1500（实测最坏约 6ms）+ 长度上限 20000（DOM 代价随长度线性）。超限时流式预览先降级为纯文本；
+// 最终 `text` 事件会经 appendEventNode 以非 live 模式完整渲染 markdown。
+const LIVE_INLINE_TOKEN_LIMIT = 1500;
 const LIVE_MARKDOWN_LIMIT = 20000;
-const tooManyDelimiters = (text, limit) => {
-  let count = 0;
+const countInlineTokens = (text, limit) => {
+  let marks = 0;
+  let brackets = 0;
+  let linkClosers = 0;
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);
-    if (code === 42 || code === 95) {
-      // * 或 _
-      count += 1;
-      if (count > limit) return true;
+    if (code === 42 || code === 95 || code === 96 || code === 126) {
+      // * _ ` ~
+      marks += 1;
+      if (marks > limit) return true;
+    } else if (code === 91) {
+      // [
+      brackets += 1;
+    } else if (code === 93 && text.charCodeAt(index + 1) === 40) {
+      // ](
+      linkClosers += 1;
+      if (Math.min(brackets, linkClosers) > limit) return true;
     }
   }
-  return false;
+  return Math.min(brackets, linkClosers) > limit;
 };
 // CCDPH-FIX(P1-1): app.js 的降级分支要用它裁剪，必须导出（此前只在本模块内使用，
 // 导致 app.js 里 `clip(state.liveText, MARKDOWN_FALLBACK_LIMIT)` 抛 ReferenceError）。
 export const MARKDOWN_FALLBACK_LIMIT = 100000;
-// CCDPH-FIX(AUDIT-13): 回退预览的定长截断同样不能切在代理对中间
-const markdownFallback = (key) =>
-  `<pre class="markdown-fallback">${escapeHtml(clip(key, MARKDOWN_FALLBACK_LIMIT))}</pre>`;
+// CCDPH-FIX(R3-P2-2): 降级以前是**裸** `<pre>`：没有任何提示，用户只会看到"消息变成等宽纯文本"，
+// 而且超过 10 万字符的部分被 clip 掉、页面上完全不可见（复制按钮复制的也是截断后的文本）。
+// 现在两件事都写清楚：为什么降级、以及是否截断/截断了多少。
+const markdownFallback = (key) => {
+  const text = String(key == null ? "" : key);
+  const clipped = clip(text, MARKDOWN_FALLBACK_LIMIT);
+  const note =
+    clipped.length < text.length
+      ? `内容过长或结构异常，已按纯文本显示（未做 Markdown 渲染与代码高亮）；此处仅显示前 ${MARKDOWN_FALLBACK_LIMIT} 个字符（共 ${text.length} 个），完整内容请用导出或复制原文。`
+      : "内容过长或结构异常，已按纯文本显示（未做 Markdown 渲染与代码高亮）。";
+  return (
+    `<div class="markdown-fallback-note">${escapeHtml(note)}</div>` +
+    `<pre class="markdown-fallback">${escapeHtml(clipped)}</pre>`
+  );
+};
 const MARKDOWN_CACHE_CHARS = 4 * 1024 * 1024;
 let markdownCacheChars = 0;
 export function clearMarkdownCache() {
@@ -110,11 +140,11 @@ export const markdown = (text, cache = true) => {
     key.length > 200000 ||
     NEST_GUARD.test(key) ||
     DELIMITER_RUN_GUARD.test(key) ||
-    // CCDPH-FIX(AUDIT-1): cache === false 就是流式路径（assistantMessage(..., true) → markdown(text, !live)），
+    // CCDPH-FIX(R3-P2-1): cache === false 就是流式路径（assistantMessage(..., true) → markdown(text, !live)），
     // 它每 120ms 重排一次且不写缓存，用更紧的计数/长度预算（见上面的常量）。
-    tooManyDelimiters(
+    countInlineTokens(
       key,
-      cache ? DELIMITER_CHARS_LIMIT : LIVE_DELIMITER_CHARS_LIMIT,
+      cache ? INLINE_TOKEN_LIMIT : LIVE_INLINE_TOKEN_LIMIT,
     ) ||
     (!cache && key.length > LIVE_MARKDOWN_LIMIT)
   )
@@ -141,7 +171,11 @@ export const markdown = (text, cache = true) => {
     // ⚠️ 必须用 **DOM 级** 处理：早先我用字符串正则 `/\sclass="([^"]*)"/g`，而 DOMPurify 的
     // 序列化**不会转义文本节点里的 `"`** —— 于是正文/`<pre><code>` 里字面出现的
     // ` class="x"`（例如讲解 HTML 的消息）会被连字删掉，**静默篡改消息内容**。
-    // 这里改为解析成 DOM、只改真实属性节点；任何失败都保持原样（宁可不剥离，也不损坏内容）。
+    // 这里改为解析成 DOM、只改真实属性节点。
+    // CCDPH-FIX(R3-P3-6): 但失败分支原来是「保持原样」—— 那等于把**模型可控的 class** 原封
+    // 不动地放进页面（可伪装成应用的按钮/徽标做界面欺骗）。失败方向必须与意图一致：改为
+    // 失败即**失败关闭** —— 用同一次 DOMPurify 配置再净化一遍，明确禁止 class（代价是这段
+    // 异常路径拿不到 language-* 高亮，但绝不会放行模型可控的类名）。
     try {
       const parsed = new DOMParser().parseFromString(html, "text/html");
       for (const node of parsed.body.querySelectorAll("[class]")) {
@@ -152,8 +186,13 @@ export const markdown = (text, cache = true) => {
         else node.removeAttribute("class");
       }
       html = parsed.body.innerHTML;
-    } catch {
-      /* 保持原样 */
+    } catch (classStripError) {
+      console.error("消息 class 剥离失败，已改为禁用 class 的净化", classStripError);
+      html = DOMPurify.sanitize(html, {
+        FORBID_TAGS: ["img", "style", "input", "form"],
+        FORBID_ATTR: ["style", "class"],
+        SANITIZE_NAMED_PROPS: true,
+      });
     }
   } catch {
     // 兜底降级：即便预检没命中，渲染期抛栈溢出也不再让整条渲染链断裂。

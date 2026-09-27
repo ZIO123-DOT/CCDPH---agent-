@@ -401,10 +401,17 @@ try {
     const r = await api("POST", "/api/terminal/stop", { body: { id: terminalId } });
     assert.equal(r.status, 200);
     assert.equal(r.json.ok, true);
+    // CCDPH-FIX(R3-P3-8): 停止一个真实在跑的终端必须如实回 stopped:true。
+    assert.equal(r.json.stopped, true);
   });
   await test("T-06", "P1", "POST /api/terminal/stop 幂等（重复 → 200）", async () => {
     const r = await api("POST", "/api/terminal/stop", { body: { id: terminalId } });
     assert.equal(r.status, 200);
+    // CCDPH-FIX(R3-P3-8): 重复停止（或对未知 id）必须如实回 stopped:false + reason，
+    // 而不是裸 {ok:true} 谎称"停掉了"。
+    assert.equal(r.json.ok, true);
+    assert.equal(r.json.stopped, false);
+    assert.ok(r.json.reason, "必须给出未停止的原因");
   });
   await test("T-07", "P1", "POST /api/terminal/start 缺 projectId → 400", async () => {
     const r = await api("POST", "/api/terminal/start", { body: {} });

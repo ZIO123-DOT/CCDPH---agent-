@@ -19,6 +19,7 @@ export function createIntegrationRoute(deps) {
     json,
     mcpWriteQueue,
     readJsonFile,
+    readProjectJsonFileNoSymlink,
     readMcpDoc,
     readSettingsJsonStrict,
     requireObject,
@@ -170,7 +171,10 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       : "";
     const [doc, projectMcp] = await Promise.all([
       readMcpDoc(),
-      root ? readJsonFile(path.join(root, ".mcp.json")) : {},
+      // CCDPH-FIX(R3-P3-4): 项目的 .mcp.json 必须拒绝符号链接（与 server.mjs 的
+      // readProjectJsonFileNoSymlink 同口径），否则项目里一个指向外部的链接就能把
+      // 外部 MCP 的 command/args/env 键名通过本接口回传出来。
+      root ? readProjectJsonFileNoSymlink(path.join(root, ".mcp.json")) : {},
     ]);
     const list = [];
     for (const [name, entry] of Object.entries(doc.mcpServers || {}))

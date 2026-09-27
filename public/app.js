@@ -223,6 +223,11 @@ function setupComposerSelects() {
     if (select.dataset.customized) continue;
     select.dataset.customized = "true";
     select.classList.add("native-select-source");
+    // CCDPH-FIX(R3-P3-9): 原生 select 被 1px+clip 视觉隐藏，但仍保留在 tab 序列里，于是
+    // 每个设置有**两个**焦点（自定义触发器 + 看不见的原生控件），读屏也会重复播报。这里
+    // 把它移出键盘 tab 序（tabindex=-1），同时**保留**其可读性：读屏与无障碍树仍能看到它，
+    // 自定义触发器也通过 aria-haspopup/aria-expanded 承担了语义。
+    select.setAttribute("tabindex", "-1");
     const wrapper = el("div", "composer-select");
     const trigger = el("button", "composer-select-trigger");
     const menu = el("div", "composer-select-menu hidden");
@@ -938,7 +943,14 @@ function setModelSelect(value) {
   }
   select.value = model;
 }
+// CCDPH-FIX(R3-P3-10): connectSession 在 `await ensureSessionAuth()` **之前**关掉上一条流、之后才
+// 建新流并写 state.source。两次调用都落在该 await 窗口内时，先建的那条 EventSource 会失去引用
+// （永不 close），而它 onmessage 里的 `state.sessionId === id` 仍然成立 —— 于是它继续往
+// state.liveText 追加，表现为流式文本重复。这里给每次连接发一个序号，只有最新一次才允许注册
+// 流；过期的调用直接返回，不再创建 EventSource。
+let sessionStreamSeq = 0;
 async function connectSession() {
+  const seq = ++sessionStreamSeq;
   // 重连同一会话只换 SSE，不清已有节点；导航离开会话仍走 disconnectSession() 默认清理。
   disconnectSession({
     preserveRenderedMessages: true,
@@ -953,6 +965,7 @@ async function connectSession() {
       toast("实时会话连接暂不可用，主界面仍可继续使用；稍后将自动重试");
     return;
   }
+  if (seq !== sessionStreamSeq) return; // 已经有更晚的一次连接接管
   if (state.sessionId !== id) return;
   const source = new EventSource(
     `/api/events?id=${encodeURIComponent(id)}`,
@@ -1871,6 +1884,22 @@ function addContextFile(file) {
   renderContext();
   toast(`已添加 ${file}`);
 }
+// CCDPH-FIX(R3-P3-7): 拼 data: URL 前对 image.type 做白名单。服务端在 /api/send 已经限制
+// `^image/(png|jpeg|gif|webp)$`（server.mjs:5045），但**渲染路径读的是持久化历史**里的值 ——
+// 直接改 state.json 就能塞进任意 type。`<img>` 本身不执行脚本，此改动是把口径补齐，
+// 并避免畸形 type 被拼成奇怪的数据 URL。
+const IMAGE_PREVIEW_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+function imagePreviewUrl(image) {
+  const type = typeof image?.type === "string" ? image.type.trim().toLowerCase() : "";
+  const preview = typeof image?.preview === "string" ? image.preview : "";
+  if (!preview || !IMAGE_PREVIEW_TYPES.has(type)) return "";
+  return `data:${type};base64,${preview}`;
+}
 function renderContext() {
   const wrap = $("#context-chips");
   wrap.replaceChildren();
@@ -1888,9 +1917,10 @@ function renderContext() {
   }
   for (const image of state.images) {
     const chip = el("div", "context-chip image-chip");
-    if (image.preview) {
+    const previewUrl = imagePreviewUrl(image);
+    if (previewUrl) {
       const thumb = document.createElement("img");
-      thumb.src = `data:${image.type};base64,${image.preview}`;
+      thumb.src = previewUrl;
       thumb.alt = image.name;
       chip.append(thumb);
     }
@@ -1912,17 +1942,23 @@ function userMessage(event) {
   if (Array.isArray(event.images) && event.images.length) {
     const attachments = el("div", "user-images");
     for (const image of event.images) {
-      if (!image.preview) {
+      const url = imagePreviewUrl(image);
+      if (!url) {
         // CCDPH-FIX(L-06): 旧事件的 base64 预览已被释放（见 trimRetainedImages），
-        // 保留文件名占位，不让用户以为附件凭空消失了
+        // 保留文件名占位，不让用户以为附件凭空消失了。
+        // CCDPH-FIX(R3-P3-7): type 不在白名单时同样走占位（而不是拼出畸形 data: URL）。
         attachments.append(
-          el("small", "", `${image.name || "图片"}（预览已释放）`),
+          el(
+            "small",
+            "",
+            `${image.name || "图片"}（${image.preview ? "预览不可用" : "预览已释放"}）`,
+          ),
         );
         continue;
       }
       const figure = el("figure", "user-image");
       const img = document.createElement("img");
-      img.src = `data:${image.type};base64,${image.preview}`;
+      img.src = url;
       img.alt = image.name || "附加图片";
       figure.append(img, el("figcaption", "", image.name || "图片"));
       attachments.append(figure);
@@ -2185,6 +2221,11 @@ function startTerminal(force = false) {
   });
   return terminalStartPromise;
 }
+// CCDPH-FIX(R3-P2-3): 代际保护。startTerminalOnce 里 `await api("terminal/start")` 是一次网络
+// 往返（服务端还要真正拉起 shell），期间用户完全可能切项目/切会话。旧实现 await 之后无条件写
+// state.terminalId / terminalRoot，于是**上一个项目**的终端被绑到新视图上：面板显示 A 的 shell
+// 输出、标题却是 B 的路径，而且 setPanel 因 terminalId 非空不再为 B 启动终端，服务端 A 的 PTY
+// 也一直留着。这里在 await 前后比对导航代数，发现被取代就丢弃响应并显式停掉刚拉起的终端。
 async function startTerminalOnce(force = false) {
   if (!activeProject()) return toast("请先添加项目");
   // CCDPH-FIX(AUDIT-7): force 原先是个从未使用的参数 —— 「重启终端」(force=true) 与
@@ -2193,17 +2234,27 @@ async function startTerminalOnce(force = false) {
   // force=false 时服务端会按 root 复用已有 shell（含其输出缓冲），行为等同重连。
   if (force && state.terminalId && !state.terminalExited)
     await api("terminal/stop", { id: state.terminalId });
+  const revision = navigationRevision;
+  const requestedRoot = state.projectInfo?.root || "";
   const terminal = await api("terminal/start", {
     projectId: state.projectId,
     sessionId: state.sessionId,
   });
+  if (revision !== navigationRevision) {
+    // 用户已经导航走了：绝不能把这个终端写进新视图。
+    await api("terminal/stop", { id: terminal.id }).catch(() => { });
+    console.info("[ccdph] 终端启动期间发生了导航，已丢弃该终端并停止它");
+    return terminal;
+  }
   disconnectTerminalStream();
   state.terminalId = terminal.id;
   setTerminalOutput(terminal.output || "");
   state.terminalExited = terminal.exited;
   // CCDPH-FIX(F16): 流式输出分支原本硬编码 -200000，导致「终端输出上限」设置
   // 在会话进行中不生效（只有重连时的 snapshot 才按服务端设置截断）。改为读设置值。
-  state.terminalRoot = state.projectInfo?.root;
+  // CCDPH-FIX(R3-P2-3): terminalRoot 取**请求时**的项目 root，而不是重新读 state.projectInfo ——
+  // 后者在 await 期间也可能已经变了。
+  state.terminalRoot = requestedRoot;
   setupTerminalView();
   if (!terminal.exited) {
     try {

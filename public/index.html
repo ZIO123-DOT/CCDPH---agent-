@@ -271,7 +271,7 @@
               </div>
               <div class="composer-right">
                 <span id="composer-hint">Enter 发送</span
-                ><button type="button" class="stop-button hidden" id="stop">
+                ><button type="button" class="stop-button hidden" id="stop" aria-label="停止生成">
                   <span data-icon="square"></span></button
                 ><button
                   type="submit"
@@ -351,7 +351,7 @@
       <form id="project-form">
         <header>
           <div class="dialog-icon" data-icon="folder-plus"></div>
-          <button type="button" data-close="project-dialog">
+          <button type="button" data-close="project-dialog" aria-label="关闭">
             <span data-icon="x"></span>
           </button>
         </header>
@@ -2224,7 +2224,7 @@
         </div>
         <div>
           <button id="reveal-file">在资源管理器中显示</button
-          ><button data-close="preview-dialog">
+          ><button data-close="preview-dialog" aria-label="关闭">
             <span data-icon="x"></span>
           </button>
         </div>
@@ -2257,6 +2257,7 @@
       class="context-menu hidden"
       id="session-context-menu"
       role="menu"
+      aria-label="会话操作"
     ></div>
     <script type="module" src="/app.js"></script>
   </body>
