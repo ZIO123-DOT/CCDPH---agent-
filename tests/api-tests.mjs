@@ -29,7 +29,12 @@ const ORIGIN = `http://127.0.0.1:${PORT}`;
 const dataDir = await mkdtemp(path.join(os.tmpdir(), "ccdph-api-data-"));
 const projectDir = await mkdtemp(path.join(os.tmpdir(), "ccdph-api-project-"));
 const outsideDir = await mkdtemp(path.join(os.tmpdir(), "ccdph-api-outside-"));
-const claudeDir = await mkdtemp(path.join(os.tmpdir(), "ccdph-api-claude-"));
+// CCDPH-FIX(R2-P2-12b): 用户级 MCP 配置（.claude.json）跟随 CLAUDE_CONFIG_DIR 的**父目录**
+// （见 server.mjs 的 MCP_FILE）。所以这里把配置目录建成 <root>/.claude，
+// 让 MCP 配置落进本用例自己的临时根目录，而不是 %TEMP% 根或真实用户目录。
+const claudeRoot = await mkdtemp(path.join(os.tmpdir(), "ccdph-api-claude-"));
+const claudeDir = path.join(claudeRoot, ".claude");
+await mkdir(claudeDir, { recursive: true });
 
 await writeFile(path.join(projectDir, "normal.txt"), "hello-ccdph", "utf8");
 await writeFile(path.join(outsideDir, "secret.txt"), "SECRET-OUTSIDE", "utf8");
@@ -646,7 +651,7 @@ try {
 } finally {
   if (child && child.exitCode === null) child.kill();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  for (const dir of [dataDir, projectDir, outsideDir, claudeDir])
+  for (const dir of [dataDir, projectDir, outsideDir, claudeRoot])
     await rm(dir, { recursive: true, force: true, maxRetries: 10 }).catch(() => {});
 }
 

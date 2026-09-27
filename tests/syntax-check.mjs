@@ -6,7 +6,11 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 const root = path.resolve(import.meta.dirname, "..");
-const files = [
+// CCDPH-FIX(R2-P3-14): 这份清单原来是**手写**的，实测漏掉 4 个 tests/*.mjs —— 包括 24KB 的
+// tests/behavior.mjs、tests/run.mjs、tests/terminal-recovery.mjs 与它自己。也就是说这些文件
+// 里的语法错误不会被门禁拦下。现在改为「显式应用文件 + 自动扫描 tests/ 与 browser/」，
+// 以后新增用例不必再记得改这份清单。
+const explicitFiles = [
   "server.mjs",
   "route-registry.mjs",
   "server-policies.mjs",
@@ -24,39 +28,17 @@ const files = [
   "public/api-client.js",
   "public/markdown-renderer.js",
   "public/terminal-text.js",
-  "tests/qa-hardening.mjs",
-  "tests/api-client-auth.mjs",
-  "tests/update-install-success.mjs",
-  "tests/worktree-create-safety.mjs",
-  "tests/windows-tool-paths.mjs",
-  "tests/terminal-registry-pending.mjs",
-  "tests/terminal-registry-hardening.mjs",
-  "tests/terminal-registry-read.mjs",
-  "tests/terminal-registry-unreadable.mjs",
-  "tests/route-domains.mjs",
-  "tests/state-fold-backup.mjs",
-  "tests/browser-profile-safety.mjs",
-  "tests/browser-lifecycle.mjs",
-  "tests/browser-stale-marker.mjs",
-  "tests/sse-limits.mjs",
-  "tests/worktree-removal.mjs",
-  "tests/resource-limits.mjs",
-  "tests/credential-storage.mjs",
-  "tests/credential-lock.mjs",
-  "tests/credential-migration-failure.mjs",
-  "tests/credential-session-only.mjs",
-  "tests/packaged-signature-fallback.mjs",
-  "tests/renderer-behavior.mjs",
-  "tests/renderer-clobbering.mjs",
-  "tests/api-tests.mjs",
-  "tests/gate.mjs",
-  "tests/frontend-export-coverage.mjs",
-  "tests/mcp-save-name.mjs",
-  ...(
-    await readdir(path.join(root, "browser"), { withFileTypes: true })
-  ).filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
-    .map((entry) => path.join("browser", entry.name)),
 ];
+const scannedFiles = (
+  await Promise.all(
+    ["tests", "browser"].map(async (dir) =>
+      (await readdir(path.join(root, dir), { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
+        .map((entry) => path.join(dir, entry.name)),
+    ),
+  )
+).flat();
+const files = [...new Set([...explicitFiles, ...scannedFiles])].sort();
 for (const relative of files) {
   const file = path.join(root, relative);
   try {

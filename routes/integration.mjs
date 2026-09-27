@@ -9,6 +9,7 @@ export function createIntegrationRoute(deps) {
     browserStatus,
     cdpEndpointFromSettings,
     commitBrowserSettings,
+    credentialEnvKeyPattern,
     detectBrowsers,
     getDb,
     getExternalOpener,
@@ -207,6 +208,18 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name))
       throw new Error("MCP 名称只能是字母数字与 .-_（≤64 字符）");
     const entry = sanitizeMcpEntry(input);
+    // CCDPH-FIX(R2-P3-7): MCP stdio 的 env 会被**明文**写进 MCP 配置文件（~/.claude.json），
+    // 而 profile.env 明确拒绝 *_TOKEN / *_API_KEY / *_AUTH / *_SECRET / *_PASSWORD —— 两条
+    // 通道的口径此前不一致，凭据就这样静默落盘。这里不做拒绝（很多 MCP server 正是靠 env
+    // 拿凭据，一律拒绝会让功能不可用），但必须**如实告知**：写日志 + 在响应里带出 warning，
+    // 由前端提示用户。绝不静默。
+    const credentialEnvKeys = Object.keys(entry.env || {}).filter((key) =>
+      credentialEnvKeyPattern.test(key),
+    );
+    if (credentialEnvKeys.length)
+      console.warn(
+        `[ccdph] MCP「${name}」的 env 含凭据类变量名（${credentialEnvKeys.join(", ")}），将以明文写入 MCP 配置文件`,
+      );
     // B-03 修复：整段「读-改-写」进 mcpWriteQueue 串行化（原来无锁，60 并发只落盘 1 条）。
     await mcpWriteQueue(async () => {
       const doc = await readMcpDoc();
@@ -222,7 +235,15 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       doc.mcpServers[name] = entry;
       await writeMcpDoc(doc);
     });
-    return json(res, { ok: true, name });
+    return json(res, {
+      ok: true,
+      name,
+      ...(credentialEnvKeys.length
+        ? {
+            warning: `MCP「${name}」的 env 里含凭据类变量（${credentialEnvKeys.join("、")}）；它会以明文保存在 MCP 配置文件里，请确认这是你接受的方式。`,
+          }
+        : {}),
+    });
   }
   if (req.method === "POST" && pathname === "/api/mcp-servers/delete") {
     const input = requireObject(await body(req));

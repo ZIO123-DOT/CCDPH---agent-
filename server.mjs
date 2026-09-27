@@ -85,6 +85,14 @@ const CCSWITCH_DB =
   path.join(os.homedir(), ".cc-switch", "cc-switch.db");
 const CLAUDE_CONFIG_DIR =
   process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+// CCDPH-FIX(R2-P2-12b): 用户级 MCP 配置就在 ~/.claude.json。原来这里写死
+// `path.join(os.homedir(), ".claude.json")`，于是**任何**只改了 CLAUDE_CONFIG_DIR 的
+// 测试/临时运行都会改写真实用户目录下的 .claude.json（实测：一次探针就把测试用的 MCP
+// 条目写进了 C:\Users\<用户>\.claude.json）—— 与 README 里「离线套件全程使用临时数据
+// 目录，不触碰部署目录」的承诺直接矛盾。改为跟随 CLAUDE_CONFIG_DIR 的父目录：
+// 默认仍然是 ~/.claude.json（行为不变），而 CLAUDE_CONFIG_DIR=/tmp/x/.claude 时落到
+// /tmp/x/.claude.json。
+const MCP_FILE = path.join(path.dirname(CLAUDE_CONFIG_DIR), ".claude.json");
 let DatabaseSync;
 let providerUsageCache = { expiresAt: 0, value: null };
 export function invalidateProviderUsageCache() {
@@ -170,6 +178,11 @@ let saveRevision = 0;
 let saveSnapshotRevision = -1;
 let apiAuthSaving = Promise.resolve();
 let foldedStateBackupPending = null;
+// CCDPH-FIX(R2-P2-3): 当 state.json 无法读取、或损坏后**无法原子隔离**时置位。
+// 原实现在这种情况下仍以空白数据启动，之后任何一次 save() 都会用 temp+rename
+// 直接覆盖掉「恢复说明里承诺保留」的原文件 —— 一次瞬时占用（杀软/索引器持有文件）
+// 就演变成静默数据丢失。置位后 save() 直接失败并如实回 400，绝不覆盖原文件。
+let stateWritesBlocked = false;
 // CCDPH-FIX(MED-15): /api/update/install 的重入闸门（见该路由）。
 const updateRuntime = {
   installRunning: false,
@@ -242,6 +255,50 @@ const profileWriteQueue = settingsWriteQueue;
 let tmpSeq = 0;
 const uniqueTmpPath = (file, tag) =>
   `${file}.${tag}-${process.pid}-${Date.now()}-${(tmpSeq++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+// CCDPH-FIX(R2-P3-6 / R2-P2-6): 裸令牌脱敏。此前只有 hook 命令走 redactHookCommand，
+// 而 sanitizeError 与「运行失败」的 SSE 事件文本都不处理 `sk-xxx` / `Bearer xxx`，
+// 于是密钥出现在错误文本里时会被回给客户端、写进 state.json 并显示在界面。
+const redactBareTokens = (text) =>
+  String(text ?? "")
+    .replace(/\bsk-[A-Za-z0-9_-]{5,}/g, (match) => `${match.slice(0, 4)}…`)
+    .replace(
+      /\bBearer\s+([A-Za-z0-9._-]{6,})/gi,
+      (_match, value) => `Bearer ${value.slice(0, 4)}…`,
+    );
+// CCDPH-FIX(R2-P2-2): 原子替换必须同时**持久**。原来只有 writeFile + rename：
+// writeFile 返回 ≠ 数据落盘。掉电/硬断电后磁盘上可能留下零长或半截文件，下次启动
+// JSON.parse 失败 → state.json 被改名隔离 → 用户看到空工作区（数据丢失）。
+// 现在：独立句柄写入 → fsync → rename → （POSIX）尽力 sync 目录项。
+const syncDirBestEffort = async (dir) => {
+  if (process.platform === "win32") return; // Windows 不支持对目录句柄 fsync
+  let handle;
+  try {
+    handle = await fs.open(dir, "r");
+    await handle.sync();
+  } catch {
+    /* 目录 sync 属尽力而为，不影响「内容已 fsync + 原子改名」这一保证 */
+  } finally {
+    await handle?.close().catch(() => { });
+  }
+};
+const writeFileAtomicDurable = async (target, text, tag = "state") => {
+  const tmp = uniqueTmpPath(target, tag);
+  try {
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const handle = await fs.open(tmp, "w");
+    try {
+      await handle.writeFile(text);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.rename(tmp, target);
+    await syncDirBestEffort(path.dirname(target));
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => { });
+    throw error;
+  }
+};
 const MAX_SESSIONS = 500;
 export const MAX_PROJECTS = 200;
 export function pickArchivedSessionEvictions(
@@ -402,7 +459,13 @@ function loadStateOffThread(stateFile) {
       callback(value);
     };
     const timer = setTimeout(
-      () => finish(reject, new Error("state.json 后台解析超时")),
+      // CCDPH-FIX(R2-P2-3): 超时属于「读取失败」而非「内容损坏」，必须带 errno，
+      // 否则 start() 会把它当成坏 JSON，去隔离一个其实完好的 state.json。
+      () => {
+        const error = new Error("state.json 后台解析超时");
+        error.code = "ETIMEDOUT";
+        finish(reject, error);
+      },
       STATE_LOAD_TIMEOUT_MS,
     );
     timer.unref?.();
@@ -444,6 +507,14 @@ const save = () => {
       // CCDPH-FIX(A10-observability): 日志改到队尾 catch（见下），避免同一次失败被记两遍。
     })
     .then(async () => {
+      // CCDPH-FIX(R2-P2-3): 启动时若 state.json 无法读取、或损坏后无法原子隔离，
+      // 我们**绝不能**再写盘 —— 否则会用空白数据覆盖掉恢复说明里承诺保留的原文件。
+      // 这里只拒绝「落盘」：内存中的运行不受影响，读接口仍可用，写接口如实回 400。
+      if (stateWritesBlocked)
+        throw new Error(
+          "会话数据文件当前无法安全写入（疑似被其它程序占用，或损坏后未能隔离）；" +
+            "为免覆盖原始文件，本次运行已暂停保存。请关闭占用该文件的程序后重启应用。",
+        );
       // A deep-but-valid state is folded in memory so the service can start,
       // but the original bytes must remain recoverable before any writeback.
       // Keep this pending across failures; the first successful save retries
@@ -491,18 +562,10 @@ const save = () => {
       const serialized = await textPromise;
       const text = serialized.text;
       lastSerializedStateBytes = serialized.bytes;
-      const tmp = uniqueTmpPath(path.join(DATA, "state.json"), "state");
-      // CCDPH-FIX(MED-14): 原子写失败（ENOSPC / EACCES / 杀软占用）时必须回收唯一临时
-      // 文件，否则 state.json.state-<pid>-<ts>-… 会在数据目录里永久堆积。
-      try {
-        // 运行期 DATA 被外部删除后自愈，不需要重启才能重新写盘。
-        await fs.mkdir(DATA, { recursive: true });
-        await fs.writeFile(tmp, text);
-        await fs.rename(tmp, path.join(DATA, "state.json"));
-      } catch (error) {
-        await fs.rm(tmp, { force: true }).catch(() => { });
-        throw error;
-      }
+      // CCDPH-FIX(MED-14) 保留：原子写失败（ENOSPC / EACCES / 杀软占用）时必须回收唯一临时
+      // 文件，否则 state.json.state-<pid>-<ts>-… 会在数据目录里永久堆积（回收在 helper 内）。
+      // CCDPH-FIX(R2-P2-2): 改为「fsync 后再 rename」的持久化原子写，避免掉电留下半截文件。
+      await writeFileAtomicDurable(path.join(DATA, "state.json"), text, "state");
     })
     .finally(() => {
       savePending = false;
@@ -647,14 +710,18 @@ export async function cleanupStateQuarantineBackups(
       if (!entry.isFile()) continue;
       const prefix = prefixes.find((candidate) => entry.name.startsWith(candidate));
       if (!prefix) continue;
-      // CCDPH-FIX(P3-13b): 必须排除恢复说明文件（`state.json.corrupt-readme.txt` 同样以
-      // `state.json.corrupt-` 开头！）。否则它时间解析为 NaN→0 会排在"最旧"，被当成过期备份删掉，
-      // 用户就失去唯一的恢复指引。要求 `corrupt-`/`oversize-` 之后紧跟**数字时间戳**。
+      // CCDPH-FIX(P3-13b) 保留：必须排除恢复说明文件（`state.json.corrupt-readme.txt`
+      // 同样以 `state.json.corrupt-` 开头！），否则它时间解析为 NaN→0 会排"最旧"被删掉。
+      // CCDPH-FIX(R2-P2-1): 但旧判据要求前缀后**只有**数字，而 `.oversize-*` 的真名是
+      // `state.json.oversize-<Date.now()>-<uuid8>`（见 quarantineOversizedStateFile），
+      // 于是 `.oversize-*` 永远不入选、永不清理 → 每个 ≥256MiB 永久堆积。
+      // 现在允许「数字时间戳 + 可选 -<短随机后缀>」，readme（.txt）仍被排除。
       const stamp = entry.name.slice(prefix.length);
-      if (!/^\d{10,}$/.test(stamp)) continue;
+      const stampMatch = /^(\d{10,})(?:-[0-9a-z]{1,16})?$/i.exec(stamp);
+      if (!stampMatch) continue;
       backups.push({
         name: entry.name,
-        time: Number(stamp) || 0,
+        time: Number(stampMatch[1]) || 0,
       });
       if (backups.length >= 10_000) break;
     }
@@ -1447,6 +1514,37 @@ export function equalSha256Hex(expectedHex, actualDigest) {
     timingSafeEqual(expected, actual)
   );
 }
+// CCDPH-FIX(R2-P3-3): 更新包 1 GiB 上限此前只按 ZIP 中央目录里**声明的** uncompressedSize
+// 累加（见 validateZipArchivePaths），而 Expand-Archive 解压的是真实数据流：伪造声明
+// （声明值很小、deflate 实际膨胀到数 GiB）即可绕过限额、把 %TEMP% 撑爆。
+// 这里在解压**之后**按真实文件大小复核；超限即抛错（外层会清掉整个随机暂存目录）。
+const MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024;
+async function assertExtractedSizeWithin(dir, limit = MAX_EXTRACTED_BYTES) {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop();
+    const entries = await fs
+      .readdir(current, { withFileTypes: true })
+      .catch(() => []);
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue; // 不跟随链接：避免把外部目录计入或成环
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      total += await fs
+        .stat(full)
+        .then((value) => value.size)
+        .catch(() => 0);
+      if (total > limit)
+        throw new Error("更新包解压后体积超过 1 GiB 安全上限，已中止安装");
+    }
+  }
+  return total;
+}
 // CCDPH-FIX(H-9): onStage 用于把当前阶段上报给后台更新任务（下载 → 解压 → 替换）。
 async function installUpdate(onStage = () => { }) {
   if (process.env.WORKBENCH_DESKTOP !== "1")
@@ -1549,6 +1647,8 @@ async function installUpdate(onStage = () => { }) {
     // PowerShell 解压期间若包被并发改写，结果不可再信任；只清理随机暂存目录，不进入替换阶段。
     if (!equalSha256Hex(check.sha256, await sha256File(zipPath, MAX_UPDATE_BYTES)))
       throw new Error("更新包在解压期间发生变化，已拒绝安装");
+    // CCDPH-FIX(R2-P3-3): 声明值可伪造，必须按解压后的**真实**体积复核 1 GiB 上限。
+    await assertExtractedSizeWithin(extractDir);
     // 安装包根目录或一级子目录里找 "CCDPH.exe"
     const exeName = "CCDPH.exe";
     let appDir = "";
@@ -1785,8 +1885,10 @@ async function writeApiAuth() {
     const text = JSON.stringify(document, null, 2);
     if (Buffer.byteLength(text, "utf8") > API_AUTH_MAX_BYTES)
       throw new Error("API 密钥配置超过安全写入上限");
-    await fs.mkdir(DATA, { recursive: true });
-    await fs.writeFile(API_AUTH_FILE, text, "utf8");
+    // CCDPH-FIX(R2-P3-5): 原来是裸 writeFile —— 写中途崩溃会留下截断文件，下次
+    // JSON.parse 失败 → 密钥库被判定为不可读、拒绝覆盖，用户在手工清理前无法再保存密钥。
+    // 改为与 state.json 相同的「fsync 后 rename」持久化原子写。
+    await writeFileAtomicDurable(API_AUTH_FILE, text, "api-auth");
     apiAuthNeedsRewrite = false;
     apiAuthPersistence = "encrypted";
     apiAuthWarning = "";
@@ -2774,9 +2876,16 @@ async function runTurn(s, prompt, model, permissionMode, images = []) {
     if (runs.get(s.id) === run)
       publish(s, {
         type: run.abort.signal.aborted ? "stopped" : "error",
+        // CCDPH-FIX(R2-P2-6): 这条文本会进 SSE、被 s.events.push 持久化到 state.json
+        // 并显示在界面，而 CLI/供应商的 stderr 可能内嵌 ANTHROPIC_AUTH_TOKEN 或绝对路径。
+        // 走 sanitizeError 同一口径（脱敏令牌 + 路径），与 HTTP 错误响应保持一致。
         text: run.abort.signal.aborted
           ? "任务已停止"
-          : `${error.message}${run.stderr ? "\n" + run.stderr : ""}`,
+          : sanitizeError(
+              new Error(
+                `${error.message}${run.stderr ? "\n" + run.stderr : ""}`,
+              ),
+            ),
       });
   } finally {
     try {
@@ -3140,6 +3249,10 @@ export const sanitizeError = (error) => {
       /([?&](?:access[_-]?token|auth[_-]?token|api[_-]?key|password|secret)=)[^&\s]+/gi,
       "$1***",
     );
+  // CCDPH-FIX(R2-P3-6): 上面的规则只认「引号/绝对路径/URL 凭据/query 凭据」，
+  // 裸 `sk-xxx` 或 `Bearer xxx` 会原样通过；而 redactHookCommand 会处理它们。
+  // 统一补上，避免错误文本把令牌回给客户端。
+  clean = redactBareTokens(clean);
   if (clean !== raw || error?.code)
     console.error("[ccdph] 操作失败:", clean);
   return clean;
@@ -4240,7 +4353,8 @@ function normalizeLoadedSettings(settings) {
   );
   settings.usageDaily = normalizeUsageDaily(settings.usageDaily);
 }
-const MCP_FILE = path.join(os.homedir(), ".claude.json");
+// CCDPH-FIX(R2-P2-12b): MCP_FILE 已提到模块作用域（见文件上方的 CLAUDE_CONFIG_DIR），
+// 不再在这里写死 os.homedir()。
 async function readMcpDoc() {
   let raw;
   try {
@@ -4486,6 +4600,7 @@ const routeIntegrationDomain = createIntegrationRoute({
   browserStatus,
   cdpEndpointFromSettings,
   commitBrowserSettings,
+  credentialEnvKeyPattern: CREDENTIAL_ENV_KEY_RE,
   detectBrowsers,
   getDb: () => db,
   getExternalOpener: () => externalOpener,
@@ -5620,9 +5735,34 @@ export async function start() {
     } catch (error) {
       if (error.code === "ENOENT") {
         // 首次启动没有旧数据，直接用默认值
+      } else if (error.code) {
+        // CCDPH-FIX(R2-P2-3): 带 errno（EACCES/EBUSY/EAGAIN/ETIMEDOUT…）说明是**读取失败**，
+        // 而不是内容损坏。旧实现把两者混在一起，会把一个**完好**的 state.json 改名成
+        // .corrupt-* 并空白启动，用户以为丢档。现在：原文件不动、暂停写入、如实告知。
+        stateWritesBlocked = true;
+        const readFailureText =
+          `会话数据读取失败：${error.message}（${error.code}）\n` +
+          `原文件未被改动，仍保留在：${stateFile}\n` +
+          "为避免用空白数据覆盖它，本次运行已暂停保存（读取与浏览仍可用）。\n" +
+          "请关闭可能占用该文件的程序（杀毒 / 同步 / 索引器）后重启应用。\n";
+        console.error(
+          `[ccdph] 会话数据读取失败（${error.code}），原文件保持不动、已暂停保存。`,
+        );
+        await fs
+          .writeFile(
+            path.join(DATA, "state.json.corrupt-readme.txt"),
+            readFailureText,
+            "utf8",
+          )
+          .catch((readmeError) =>
+            console.error(
+              "[ccdph] 写入读取失败说明失败:",
+              readmeError?.message || readmeError,
+            ),
+          );
       } else {
-        // 损坏/读取失败不能拖垮整个应用：把坏文件改名备份，用默认（空白）数据
-        // 继续启动，并留下可读说明，绝不静默吞掉。
+        // 内容损坏：改名隔离后以空白数据启动。隔离**失败**时绝不能继续写盘，
+        // 否则之后任意一次 save() 都会覆盖掉恢复说明里承诺保留的原文件。
         const backup = `${stateFile}.corrupt-${Date.now()}`;
         let isolated = false;
         try {
@@ -5634,6 +5774,9 @@ export async function start() {
             backupError?.message || backupError,
           );
         }
+        // CCDPH-FIX(R2-P2-3): 隔离失败 = 原文件还在原地。此时若允许写盘，之后任意一次
+        // save() 都会把它覆盖掉，恢复说明里「原文件仍保留」的承诺就成了空话。
+        if (!isolated) stateWritesBlocked = true;
         const recoveryText = isolated
           ? `会话数据读取失败：${error.message}\n原文件已备份为：${backup}\n应用已用默认（空白）会话数据启动。\n`
           : `会话数据读取失败：${error.message}\n原文件未能改名隔离，仍保留在：${stateFile}\n应用已用默认（空白）会话数据启动；请先关闭占用该文件的程序后重试。\n`;

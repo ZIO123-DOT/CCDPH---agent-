@@ -324,8 +324,16 @@ return async function routeWorkspaceIoDomain(req, res, url, pathname) {
         terminal.child.stdin?.off("drain", terminal.onStdinDrain);
       terminals.delete(terminal.id);
       void terminalProcessRegistry.schedule();
+      return json(res, { ok: true, stopped: true });
     }
-    return json(res, { ok: true });
+    // CCDPH-FIX(R2-P3-2): stop 是幂等操作（T-06 契约：重复 stop → 200），但对**未知/已退出**
+    // 的 id 继续回裸 {ok:true} 等于谎称"停掉了"。改为如实回 stopped:false 并给出原因 ——
+    // 契约不变（仍 200），但调用方与用户能分辨「真的停了」与「本来就没在跑」。
+    return json(res, {
+      ok: true,
+      stopped: false,
+      reason: terminal ? "终端已经结束" : "终端不存在或已结束",
+    });
   }
   return json(res, { error: "接口不存在" }, 404);
 }

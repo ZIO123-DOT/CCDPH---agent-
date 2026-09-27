@@ -1,6 +1,6 @@
 {
   "name": "ccdph",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "main": "desktop.cjs",
   "scripts": {
@@ -8,6 +8,9 @@
     "test": "node tests/run.mjs",
     "check": "node tests/syntax-check.mjs",
     "integrity": "node scripts/generate-runtime-integrity.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.268",

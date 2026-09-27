@@ -50,7 +50,7 @@
         </button>
         <label class="search-box"
           ><span data-icon="search"></span
-          ><input id="task-search" placeholder="搜索任务" /><kbd
+          ><input id="task-search" placeholder="搜索任务" aria-label="搜索任务" /><kbd
             >Ctrl+K</kbd
           ></label
         >
@@ -211,14 +211,14 @@
             class="slash-menu hidden"
             id="slash-menu"
             role="listbox"
-            aria-label="Claude Skills"
+           aria-label="Claude Skills"
           ></div>
           <form class="composer" id="composer">
             <textarea
               id="prompt"
               rows="2"
               placeholder="向 Claude 描述任务，@ 可引用文件，/ 可使用命令…"
-              aria-label="给 Claude 的消息"
+             aria-label="给 Claude 的消息"
             ></textarea>
             <div class="composer-bar">
               <div class="composer-left">
@@ -262,7 +262,7 @@
                   <option value="max">最大</option></select
                 ><select
                   id="environment-mode"
-                  aria-label="工作环境"
+                 aria-label="工作环境"
                   title="只影响新任务"
                 >
                   <option value="local">当前工作区</option>
@@ -304,7 +304,7 @@
         <div class="panel-tools" id="file-tools">
           <label class="panel-search"
             ><span>⌕</span><input id="file-search" placeholder="按文件名搜索"
-          /></label>
+          aria-label="按文件名搜索" /></label>
         </div>
         <div class="panel-body" id="file-list"></div>
         <div class="panel-body hidden" id="changes-panel">
@@ -330,7 +330,7 @@
               autocomplete="off"
               spellcheck="false"
               placeholder="输入命令后按 Enter"
-            />
+            aria-label="终端命令输入" />
           </form>
         </div>
         <div class="inspector-footer">
@@ -363,7 +363,7 @@
             id="project-path"
             required
             placeholder="D:\Projects\my-project"
-          /><button type="button" id="browse-folder">浏览…</button>
+          aria-label="项目文件夹路径" /><button type="button" id="browse-folder">浏览…</button>
         </div>
         <footer>
           <button type="button" data-close="project-dialog">取消</button
@@ -374,7 +374,7 @@
     <dialog id="rename-dialog" class="modal compact-modal">
       <form id="rename-form">
         <h2>重命名任务</h2>
-        <input id="rename-input" maxlength="80" required />
+        <input id="rename-input" maxlength="80" required aria-label="任务名称" />
         <footer>
           <button type="button" data-close="rename-dialog">取消</button
           ><button type="submit" class="primary">保存</button>
@@ -397,7 +397,7 @@
             <label class="settings-search"
               ><span data-icon="search"></span
               ><input id="settings-search" placeholder="搜索设置…"
-            /></label>
+            aria-label="搜索设置" /></label>
             <small>个人</small>
             <button type="button" class="active" data-settings-tab="general">
               <span data-icon="settings"></span>常规
@@ -620,7 +620,7 @@
                   <div>
                     <b>界面语言</b><small>切换后立即生效；更多语言在计划中</small>
                   </div>
-                  <select id="language-setting">
+                  <select id="language-setting" aria-label="界面语言">
                     <option value="zh-CN">简体中文</option>
                     <option value="en">English（即将推出）</option>
                   </select>
@@ -630,7 +630,7 @@
                     <b>回答角色</b
                     ><small>按你的身份调整 Claude 的讲解深度和用词</small>
                   </div>
-                  <select id="persona-setting">
+                  <select id="persona-setting" aria-label="回答角色">
                     <option value="default">默认（跟随项目）</option>
                     <option value="college">大学生 · 循序渐进</option>
                     <option value="senior">资深程序员 · 直击要点</option>
@@ -644,7 +644,7 @@
                     rows="3"
                     maxlength="2000"
                     placeholder="用一两句话描述你的背景和偏好，例如：我是电子信息专业大三学生，正在备赛电赛，请多解释硬件相关概念。"
-                  ></textarea>
+                  aria-label="自定义回答角色"></textarea>
                   <small>会作为背景设定注入每一轮对话，不影响项目里的 CLAUDE.md。</small>
                 </div>
               </div>
@@ -859,7 +859,7 @@
                   <div>
                     <b>连接模式</b><small>决定 AI 使用哪一套登录态</small>
                   </div>
-                  <select id="browser-mode">
+                  <select id="browser-mode" aria-label="浏览器连接模式">
                     <option value="attach">
                       复用我的 Edge（推荐，最像 Codex）
                     </option>
@@ -921,7 +921,7 @@
                     placeholder="example.com;*.example.org"
                     autocomplete="off"
                     spellcheck="false"
-                  />
+                  aria-label="允许的域名" />
                 </div>
                 <div class="setting-row">
                   <div>
@@ -934,7 +934,7 @@
                     placeholder="bank.example.com"
                     autocomplete="off"
                     spellcheck="false"
-                  />
+                  aria-label="阻止的域名" />
                 </div>
               </div>
             </section>
@@ -986,7 +986,7 @@
                 <div id="hooks-editor" class="hooks-editor hidden">
                   <div class="setting-row">
                     <div><b>事件</b><small>Claude Code 的触发时机</small></div>
-                    <select id="hooks-event"></select>
+                    <select id="hooks-event" aria-label="Hook 事件"></select>
                   </div>
                   <div class="setting-row">
                     <div>
@@ -997,7 +997,7 @@
                       id="hooks-matcher"
                       autocomplete="off"
                       spellcheck="false"
-                    />
+                    aria-label="Hook Matcher" />
                   </div>
                   <div class="setting-row">
                     <div>
@@ -1008,7 +1008,7 @@
                       id="hooks-command"
                       autocomplete="off"
                       spellcheck="false"
-                    />
+                    aria-label="Hook 命令" />
                   </div>
                   <div class="setting-row">
                     <div class="api-form-actions">
@@ -1131,7 +1131,7 @@
                     ><small>提交记录里的作者名与邮箱；可写入全局或当前仓库</small>
                   </div>
                   <div class="path-setting-control">
-                    <select id="git-identity-scope">
+                    <select id="git-identity-scope" aria-label="Git 身份作用范围">
                       <option value="global">全局（--global）</option>
                       <option value="local">当前仓库（--local）</option>
                     </select>
@@ -1148,14 +1148,14 @@
                   <div>
                     <b>用户名</b><small id="git-user-name-hint">提交记录里的作者名</small>
                   </div>
-                  <input id="git-user-name" autocomplete="off" spellcheck="false" />
+                  <input id="git-user-name" autocomplete="off" spellcheck="false" aria-label="Git 用户名" />
                 </div>
                 <div class="setting-row">
                   <div>
                     <b>邮箱</b
                     ><small id="git-user-email-hint">提交记录里的作者邮箱</small>
                   </div>
-                  <input id="git-user-email" autocomplete="off" spellcheck="false" />
+                  <input id="git-user-email" autocomplete="off" spellcheck="false" aria-label="Git 邮箱" />
                 </div>
               </div>
               <div class="settings-card">
@@ -1180,7 +1180,7 @@
                 <div id="git-remote-editor" class="git-remote-editor hidden">
                   <div class="setting-row">
                     <div><b>远程名称</b><small>如 origin、upstream</small></div>
-                    <input id="git-remote-name" autocomplete="off" spellcheck="false" />
+                    <input id="git-remote-name" autocomplete="off" spellcheck="false" aria-label="远程名称" />
                   </div>
                   <div class="setting-row">
                     <div>
@@ -1189,7 +1189,7 @@
                         >https://… 或 ssh://git@github.com:22/用户/仓库.git（端口写在 URL 里）</small
                       >
                     </div>
-                    <input id="git-remote-url" autocomplete="off" spellcheck="false" />
+                    <input id="git-remote-url" autocomplete="off" spellcheck="false" aria-label="远程地址" />
                   </div>
                   <div class="setting-row">
                     <div class="api-form-actions">
@@ -1235,7 +1235,7 @@
                     <b>默认工作环境</b
                     ><small>新会话使用当前工作区或独立 Worktree</small>
                   </div>
-                  <select id="default-environment-secondary">
+                  <select id="default-environment-secondary" aria-label="默认工作环境">
                     <option value="local">当前工作区</option>
                     <option value="worktree">独立 Worktree</option>
                   </select>
@@ -1249,7 +1249,7 @@
                     <input
                       id="claude-executable-setting"
                       placeholder="留空自动检测"
-                    /><button
+                    aria-label="Claude Code 可执行文件路径" /><button
                       type="button"
                       class="setting-action"
                       id="pick-claude-executable"
@@ -1291,7 +1291,7 @@
                       >为新任务创建 detached Worktree，避免修改主工作区</small
                     >
                   </div>
-                  <select id="default-environment-worktree">
+                  <select id="default-environment-worktree" aria-label="默认 Worktree 模式">
                     <option value="local">当前工作区</option>
                     <option value="worktree">独立 Worktree</option>
                   </select>
@@ -1322,7 +1322,7 @@
                       id="worktree-branch"
                       autocomplete="off"
                       spellcheck="false"
-                    />
+                    aria-label="Worktree 分支名" />
                   </div>
                   <div class="setting-row">
                     <div>
@@ -1333,7 +1333,7 @@
                       id="worktree-base"
                       autocomplete="off"
                       spellcheck="false"
-                    />
+                    aria-label="Worktree 基线" />
                   </div>
                   <div class="setting-row">
                     <div class="api-form-actions">
@@ -1369,7 +1369,7 @@
               <div class="settings-card">
                 <div class="setting-row">
                   <div><b>主题</b><small>跟随系统，或固定浅色/深色</small></div>
-                  <select id="theme-setting">
+                  <select id="theme-setting" aria-label="主题">
                     <option value="system">跟随系统</option>
                     <option value="light">浅色</option>
                     <option value="dark">深色</option>
@@ -1379,7 +1379,7 @@
                   <div>
                     <b>界面字体</b><small>应用于聊天、菜单和设置界面</small>
                   </div>
-                  <select id="font-setting">
+                  <select id="font-setting" aria-label="界面字体">
                     <option value="system">系统字体</option>
                     <option value="yahei">微软雅黑</option>
                     <option value="serif">衬线字体</option>
@@ -1390,7 +1390,7 @@
                   <div>
                     <b>基础字号</b><small>独立于页面缩放调整文字大小</small>
                   </div>
-                  <select id="font-size-setting">
+                  <select id="font-size-setting" aria-label="基础字号">
                     <option value="12">12 px</option>
                     <option value="13">13 px</option>
                     <option value="14">14 px</option>
@@ -1401,7 +1401,7 @@
                   <div>
                     <b>界面密度</b><small>调整列表和设置项的垂直间距</small>
                   </div>
-                  <select id="density-setting">
+                  <select id="density-setting" aria-label="界面密度">
                     <option value="comfortable">舒适</option>
                     <option value="compact">紧凑</option>
                   </select>
@@ -1485,7 +1485,7 @@
                     <b>默认模型</b
                     ><small>可跟随 CC Switch 映射，或选择 Claude 模型族</small>
                   </div>
-                  <select id="default-model-setting">
+                  <select id="default-model-setting" aria-label="默认模型">
                     <option value="">跟随 CC Switch</option>
                     <option value="sonnet">Sonnet</option>
                     <option value="opus">Opus</option>
@@ -1500,7 +1500,7 @@
                       参数控制；不支持的模型会自动降级</small
                     >
                   </div>
-                  <select id="default-effort-setting">
+                  <select id="default-effort-setting" aria-label="思考强度">
                     <option value="inherit">跟随服务配置</option>
                     <option value="low">低</option>
                     <option value="medium">中</option>
@@ -1516,7 +1516,7 @@
                       >单次任务允许的最大 agent 轮数，0 表示不额外限制</small
                     >
                   </div>
-                  <select id="max-turns-setting">
+                  <select id="max-turns-setting" aria-label="最大轮数">
                     <option value="0">不额外限制</option>
                     <option value="10">10 轮</option>
                     <option value="20">20 轮</option>
@@ -1556,7 +1556,7 @@
                     <b>新会话默认权限</b
                     ><small>当前会话仍可在输入框底部单独选择</small>
                   </div>
-                  <select id="default-permission">
+                  <select id="default-permission" aria-label="新会话默认权限">
                     <option value="default">手动确认</option>
                     <option value="acceptEdits">自动接受编辑</option>
                     <option value="plan">计划模式</option>
@@ -1588,7 +1588,7 @@
                     <b>API 接入方式</b
                     ><small>跟随 CC Switch：沿用其当前 Provider；供应商配置：用下方列表中选中的一套地址与密钥</small>
                   </div>
-                  <select id="api-mode-setting">
+                  <select id="api-mode-setting" aria-label="API 接入方式">
                     <option value="cc-switch">跟随 CC Switch</option>
                     <option value="profile">供应商配置</option>
                   </select>
@@ -1617,7 +1617,7 @@
                     id="api-profile-name"
                     placeholder="例如 DeepSeek"
                     autocomplete="off"
-                  />
+                  aria-label="供应商名称" />
                 </div>
                 <div class="setting-row" data-api-profiles>
                   <div>
@@ -1630,7 +1630,7 @@
                     placeholder="https://api.deepseek.com/anthropic"
                     autocomplete="off"
                     spellcheck="false"
-                  />
+                  aria-label="供应商接口地址" />
                 </div>
                 <div class="setting-row" data-api-profiles>
                   <div>
@@ -1643,14 +1643,14 @@
                     placeholder="deepseek-chat"
                     autocomplete="off"
                     spellcheck="false"
-                  />
+                  aria-label="供应商模型名" />
                 </div>
                 <div class="setting-row" data-api-profiles>
                   <div>
                     <b>计价货币</b
                     ><small>额度与用量统计按此货币显示</small>
                   </div>
-                  <select id="api-profile-currency">
+                  <select id="api-profile-currency" aria-label="计价货币">
                     <option value="CNY">人民币 ¥ (CNY)</option>
                     <option value="USD">美元 $ (USD)</option>
                   </select>
@@ -1666,7 +1666,7 @@
                     placeholder="sk-..."
                     autocomplete="off"
                     spellcheck="false"
-                  />
+                  aria-label="供应商密钥" />
                 </div>
                 <div class="setting-row" data-api-profiles>
                   <div class="api-form-actions">
@@ -1731,7 +1731,7 @@
                   <div>
                     <b>刷新间隔</b><small>支持的余额接口才会发起请求</small>
                   </div>
-                  <select id="usage-refresh-setting">
+                  <select id="usage-refresh-setting" aria-label="刷新间隔">
                     <option value="1">每 1 分钟</option>
                     <option value="5">每 5 分钟</option>
                     <option value="15">每 15 分钟</option>
@@ -1839,30 +1839,30 @@
                 <div id="mcp-editor" class="mcp-editor hidden">
                   <div class="setting-row">
                     <div><b>名称</b><small>字母数字与 .-_，如 filesystem</small></div>
-                    <input id="mcp-name" autocomplete="off" spellcheck="false" />
+                    <input id="mcp-name" autocomplete="off" spellcheck="false" aria-label="MCP 名称" />
                   </div>
                   <div class="setting-row">
                     <div><b>类型</b><small>stdio = 本地命令；http = 远程地址</small></div>
-                    <select id="mcp-type">
+                    <select id="mcp-type" aria-label="MCP 类型">
                       <option value="stdio">stdio（本地命令）</option>
                       <option value="http">http（远程 URL）</option>
                     </select>
                   </div>
                   <div class="setting-row" id="mcp-command-row">
                     <div><b>启动命令</b><small>例如 npx -y @modelcontextprotocol/server-filesystem 或 python server.py</small></div>
-                    <input id="mcp-command" autocomplete="off" spellcheck="false" />
+                    <input id="mcp-command" autocomplete="off" spellcheck="false" aria-label="MCP 启动命令" />
                   </div>
                   <div class="setting-row" id="mcp-args-row">
                     <div><b>参数（空格分隔）</b><small>例如 C:\projects 或 --port 3000</small></div>
-                    <input id="mcp-args" autocomplete="off" spellcheck="false" />
+                    <input id="mcp-args" autocomplete="off" spellcheck="false" aria-label="MCP 参数" />
                   </div>
                   <div class="setting-row hidden" id="mcp-url-row">
                     <div><b>服务地址</b><small>http(s):// 开头的 MCP 端点</small></div>
-                    <input id="mcp-url" autocomplete="off" spellcheck="false" />
+                    <input id="mcp-url" autocomplete="off" spellcheck="false" aria-label="MCP 服务地址" />
                   </div>
                   <div class="setting-row" id="mcp-env-row">
                     <div><b>环境变量</b><small>每行一个，格式 KEY=value（密钥只写入本机配置，不回显）</small></div>
-                    <textarea id="mcp-env" rows="2" spellcheck="false" placeholder="API_KEY=sk-..."></textarea>
+                    <textarea id="mcp-env" rows="2" spellcheck="false" placeholder="API_KEY=sk-..." aria-label="MCP 环境变量"></textarea>
                   </div>
                   <div class="setting-row">
                     <div class="api-form-actions">
@@ -1897,7 +1897,7 @@
                       >直接使用当前目录，或创建隔离的 detached Worktree</small
                     >
                   </div>
-                  <select id="default-environment">
+                  <select id="default-environment" aria-label="新会话默认环境">
                     <option value="local">当前工作区</option>
                     <option value="worktree">独立 Worktree</option>
                   </select>
@@ -1944,7 +1944,7 @@
                   <div>
                     <b>Shell</b><small>更改后在下次启动终端时生效</small>
                   </div>
-                  <select id="terminal-shell-setting">
+                  <select id="terminal-shell-setting" aria-label="终端 Shell">
                     <option value="system">跟随系统</option>
                     <option value="cmd">命令提示符</option>
                     <option value="powershell">Windows PowerShell</option>
@@ -1956,7 +1956,7 @@
                     <b>退出终端保留时间</b
                     ><small>到期后释放进程引用和输出缓存</small>
                   </div>
-                  <select id="terminal-retention-setting">
+                  <select id="terminal-retention-setting" aria-label="退出终端保留时间">
                     <option value="1">1 分钟</option>
                     <option value="5">5 分钟</option>
                     <option value="15">15 分钟</option>
@@ -1968,7 +1968,7 @@
                     <b>输出缓存上限</b
                     ><small>限制每个终端在内存中保留的字符数</small>
                   </div>
-                  <select id="terminal-output-setting">
+                  <select id="terminal-output-setting" aria-label="输出缓存上限">
                     <option value="50000">5 万字符</option>
                     <option value="200000">20 万字符</option>
                     <option value="500000">50 万字符</option>
@@ -2004,7 +2004,7 @@
                       Code 管理</small
                     >
                   </div>
-                  <select id="history-limit-setting">
+                  <select id="history-limit-setting" aria-label="每个会话事件上限">
                     <option value="500">500 条</option>
                     <option value="1000">1,000 条</option>
                     <option value="2500">2,500 条</option>
@@ -2180,7 +2180,7 @@
                     <input
                       id="update-manifest-setting"
                       placeholder="https://example.com/workbench/latest.json"
-                    />
+                    aria-label="更新源地址" />
                   </div>
                 </div>
                 <label class="setting-row toggle-row"
@@ -2213,7 +2213,7 @@
       <label
         ><span data-icon="search"></span
         ><input id="command-input" placeholder="搜索任务、项目、文件或命令"
-      /></label>
+      aria-label="命令面板输入" /></label>
       <div id="command-results"></div>
       <footer>↑↓ 选择　Enter 打开　Esc 关闭</footer>
     </dialog>
@@ -2234,7 +2234,7 @@
         <input
           id="diff-feedback-input"
           placeholder="告诉 Claude 如何修改这个文件…"
-        /><button type="submit">发送反馈</button>
+        aria-label="文件修改反馈" /><button type="submit">发送反馈</button>
       </form>
     </dialog>
     <dialog id="confirm-dialog" class="modal compact-modal">

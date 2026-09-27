@@ -157,11 +157,19 @@ let dedicatedLaunchError = "";
 // 时收尾代码不会执行，这个文件就是下次启动唯一能定位「残留实例」的线索 —— 残留实例带着
 // 登录态和一个**无鉴权**的 --remote-debugging-port 一直留在机器上。
 const DEDICATED_PID_FILE = () => path.join(DATA_DIR, "browser", "dedicated-edge.json");
-function staleDedicatedEdgeRecoveryHint(pid = 0) {
-  const processHint = Number.isInteger(Number(pid)) && Number(pid) > 0
-    ? `请先在任务管理器结束 PID ${Number(pid)} 的 msedge.exe，`
-    : "请先在任务管理器结束 CCDPH 专用的 msedge.exe，";
-  return `${processHint}确认调试端口已关闭后，再删除标记文件并重试：${DEDICATED_PID_FILE()}。不要只删除标记而保留浏览器进程。`;
+function staleDedicatedEdgeRecoveryHint(pid = 0, port = 0) {
+  // CCDPH-FIX(R2-P2-8): 原来无条件让用户"结束 PID N 的 msedge.exe"。但走进 fail-closed
+  // 分支最常见的成因恰恰是 **这个 PID 已被用户自己的普通 Edge 复用** —— 照做会让他杀掉
+  // 自己的浏览器。改为给出可自行核验的定位方式（按调试端口找监听进程），PID 只作参考。
+  const pidHint =
+    Number.isInteger(Number(pid)) && Number(pid) > 0
+      ? `PID 标记记录的是 ${Number(pid)}（若该 PID 现在是你自己的普通 Edge，请不要结束它）。`
+      : "";
+  const portHint =
+    Number.isInteger(Number(port)) && Number(port) > 0
+      ? `在 PowerShell 里执行 netstat -ano -p tcp | findstr :${Number(port)}，找出仍在该调试端口上 LISTENING 的进程并结束它。`
+      : "请在任务管理器里结束 CCDPH 专用的 msedge.exe。";
+  return `请先处理残留进程：${pidHint}${portHint}确认调试端口已关闭后，再删除标记文件并重试：${DEDICATED_PID_FILE()}。不要只删除标记而保留浏览器进程。`;
 }
 // CCDPH-FIX(BR-10): 只有带这个标记文件的目录才被认作 CCDPH 自己的浏览器配置目录。
 const PROFILE_MARKER = ".ccdph-browser-profile";
@@ -312,7 +320,10 @@ export function matchesDedicatedEdgeIdentity(tasklistOutput, netstatOutput, pid,
       const [protocol, local, , state, ownerPid] = columns;
       return (
         protocol.toUpperCase() === "TCP" &&
-        local.endsWith(`:${expectedPort}`) &&
+        // CCDPH-FIX(R2-P3-15): 原来用字符串后缀 `local.endsWith(":9223")` 匹配端口。
+        // 改为按最后一个冒号切出**完整端口号**再比较（同时兼容 [::1]:9223 这种 IPv6 写法），
+        // 语义明确、不受地址长度影响。
+        local.slice(local.lastIndexOf(":") + 1) === expectedPort &&
         state.toUpperCase() === "LISTENING" &&
         ownerPid === expectedPid
       );
@@ -600,11 +611,34 @@ export async function stopDedicatedEdge() {
   return true;
 }
 
+// CCDPH-FIX(R2-P2-8): 专用调试端口当前**是否仍被任何进程监听**。
+// 只看「端口是否 LISTENING」，不要求归属 PID —— 用来判定"是否真的还有遗留的调试面"。
+// 返回 null 表示无法判定（netstat 调用失败或输出不可用）。
+async function debugPortListeningState(port) {
+  if (!Number.isInteger(Number(port)) || Number(port) <= 0) return null;
+  const netstat = await captureWindowsCommand(NETSTAT_EXE, ["-ano", "-p", "tcp"], 5000);
+  if (!netstat.ok) return null;
+  return String(netstat.out || "")
+    .split(/\r?\n/)
+    .some((line) => {
+      const columns = line.trim().split(/\s+/);
+      if (columns.length < 5 || columns[0].toUpperCase() !== "TCP") return false;
+      const local = columns[1];
+      return (
+        local.slice(local.lastIndexOf(":") + 1) === String(Number(port)) &&
+        columns[3].toUpperCase() === "LISTENING"
+      );
+    });
+}
+
 // CCDPH-FIX(BR-5): 启动时的残留清扫。上一次运行如果是崩溃 / 被任务管理器强杀 / 关机，
 // 退出流程没机会执行，专有 Edge（带着登录态的 profile + 无鉴权的调试端口）会一直活着。
 // 这里按 pid 标记文件把它整棵进程树收掉；确认过 pid 现在还确实是 msedge.exe 才会动手。
-// fail-closed：标记损坏、身份不可核验或进程树无法结束时会抛错，由 server.start()
-// 拒绝启动并把标记路径与安全恢复步骤交给用户，不能静默放过无鉴权 CDP 端口。
+// 标记损坏或进程树无法结束时仍然抛错，由 server.start() 拒绝启动并把标记路径与安全恢复
+// 步骤交给用户，不能静默放过无鉴权 CDP 端口。
+// CCDPH-FIX(R2-P2-8): 但「身份不可核验」不再无条件拒绝启动 —— 只有当无鉴权调试端口**确实
+// 仍在监听**时才 fail-closed；端口已关闭（或无法判定）时继续启动，避免把一次普通的
+// PID 复用 / netstat 超时变成应用级可用性锁定。
 export async function sweepStaleDedicatedEdge() {
   let saved = null;
   try {
@@ -633,10 +667,31 @@ export async function sweepStaleDedicatedEdge() {
     return false;
   }
   const identity = await isDedicatedEdgeProcess(pid, Number(saved?.port));
-  if (identity.status === "unverifiable")
+  if (identity.status === "unverifiable") {
+    // CCDPH-FIX(R2-P2-8): 这里原来**无条件**抛错拒绝启动，而 unverifiable 的两个常见
+    // 成因都并不代表有安全风险：(1) 标记里的 PID 已被用户自己的普通 Edge 复用（此时
+    // 根本不存在残留的专用实例）；(2) tasklist/netstat 在 4s/5s 内没返回。原来的提示
+    // 还会让用户去结束那个 PID —— 正好是他的普通浏览器。真正的风险只有一个：无鉴权的
+    // CDP 调试端口还开着。所以按「端口是否仍被监听」判定：
+    //   端口已关闭（或无法判定）→ 没有遗留攻击面，清/留标记后继续启动，只留警告日志；
+    //   端口仍在监听         → 继续 fail-closed 拒绝启动，提示改为按端口定位进程。
+    // 另注：带 errno 的 `systematic` 环境故障（netstat 不可用）不应当永久锁死应用启动。
+    const port = Number(saved?.port);
+    const listening = await debugPortListeningState(port);
+    if (listening !== true) {
+      console.warn(
+        `[ccdph] 专用浏览器残留标记无法核验（${identity.reason}）；` +
+          (listening === false
+            ? `调试端口 ${port} 已无监听，清理标记后继续启动。`
+            : "且无法确认调试端口状态（netstat 不可用），标记保留原样，继续启动。"),
+      );
+      if (listening === false) clearDedicatedPidMarker(pid);
+      return false;
+    }
     throw new Error(
-      `${identity.reason}；PID 标记已保留，为避免遗留无鉴权 CDP 端口已拒绝启动。${staleDedicatedEdgeRecoveryHint(pid)}`,
+      `${identity.reason}，且调试端口 ${port} 仍在监听（可能存在未受控的调试接口）；PID 标记已保留，为避免遗留无鉴权 CDP 端口已拒绝启动。${staleDedicatedEdgeRecoveryHint(pid, port)}`,
     );
+  }
   if (identity.status === "mismatch") {
     clearDedicatedPidMarker(pid);
     return false;

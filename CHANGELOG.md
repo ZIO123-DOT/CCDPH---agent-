@@ -2,6 +2,83 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.4] - 2026-09-28
+
+> 第二份**独立复审**（从零通读 + 真机执行，未参考既往记录）后的修复轮。
+> 结论为 0×P0 / 0×P1 / 12×P2 / 14×P3：对外攻击面已确认坚固，问题集中在
+> **出错时的诚实性、数据持久化、完整性链与门禁可信度**。条目编号沿用该报告。
+
+### Fixed
+
+- **P2**（数据）隔离备份清理漏掉 `.oversize-*`：真名带 `-<uuid8>` 后缀，而旧判据要求前缀后
+  紧跟纯数字，导致每个 ≥256MiB 的隔离文件**永久堆积**。现允许「时间戳 + 可选短随机后缀」，
+  恢复说明文件（`.txt`）仍被排除。
+- **P2**（数据）状态写盘缺持久化栅栏：`writeFile + rename` 在掉电后可能留下零长/半截文件，
+  下次启动被判损坏并以**空白**数据启动（整个会话库「消失」）。现为
+  `独立句柄写 → fsync → rename`，POSIX 上再尽力 `sync` 目录项。
+- **P2**（数据）**读取失败被当成内容损坏**：带 errno 的失败（EACCES/EBUSY/EAGAIN/ETIMEDOUT）
+  会把完好的 `state.json` 改名隔离，而隔离**失败**时仍以空白启动、随后任意一次保存都会覆盖
+  「恢复说明里承诺保留」的原文件。现在读取失败不改名、不覆盖，并暂停写盘（读接口仍可用，
+  写接口如实回 400 并说明原因）；隔离失败同样暂停写盘。
+- **P2**（诚实性）运行失败的 SSE 事件文本会进 `state.json` 并上屏，却不经脱敏出口。现走
+  `sanitizeError`，与 HTTP 错误同口径；`sanitizeError` 另补裸 `sk-*` / `Bearer *` 脱敏。
+- **P2**（诚实性）`/api/worktrees` 与 `/api/git-config` 把「git 调用失败」（未安装 / PATH 异常 /
+  dubious ownership / 权限 / 超时）伪装成 200「当前工作区不是 Git 仓库」。现在只有确认不是仓库
+  才走该业务状态，其余抛错并回脱敏文案；前端 Git 面板的静默 `catch{}` 改为如实展示错误。
+- **P2**（诚实性）会话右键菜单项丢弃 Promise：请求失败（服务重启 / 401 / 500）时无 toast、
+  无 catch，「删除本地记录」这类不可逆操作会看起来「什么都没发生」。现统一走 `action()`。
+- **P2**（诚实性）终端 SSE 中断后状态不收敛：面板继续显示「活的」提示符、设置区显示「运行中」，
+  却再也不会写入输出、按键被静默丢弃、重新选中页签也不重启。现收敛状态 + 显示中断提示 + 可重连。
+- **P2**（可用性）专用 Edge 残留清扫在身份「不可核验」时**无条件拒绝启动**，且提示会让用户去结束
+  一个可能属于他自己的普通浏览器的 PID。现在只在无鉴权调试端口**确实仍在监听**时 fail-closed，
+  端口已关闭（或无法判定）时继续启动并留警告日志；恢复提示改为按端口定位监听进程。
+- **P2**（隔离）打包签名降级用例会启动部署版 exe 并改写其**真实** `.data`
+  （`runtime.json` / `startup-warnings.log`）与 `.desktop-data`。现在 `WORKBENCH_DATA_DIR` 的
+  显式取值优先（含 `startup-warnings.log` 的落点），该用例改用临时目录并自行清理。
+- **P2**（隔离，复审外补充）用户级 MCP 配置 `MCP_FILE` 原写死 `~/.claude.json`，任何只改
+  `CLAUDE_CONFIG_DIR` 的测试/临时运行都会改写**真实**用户配置（实测已复现）。现改为跟随
+  `CLAUDE_CONFIG_DIR` 的父目录（默认行为不变），`tests/api-tests.mjs` 一并调整为临时根目录。
+- **P2**（完整性）清单未覆盖 `sdk.mjs` **运行期** `require()` 的依赖：替换
+  `node_modules/ajv/dist/runtime/*.js` 后启动校验全绿（实测 `ajv` 命中数 = 0）。生成器现在扫描
+  `sdk.mjs` 的 `require()` 并解析到真实文件自动纳入（清单 39 → 44 条），解析失败直接拒绝生成。
+- **P2**（完整性）澄清边界而非假装是强边界：清单必须声明
+  `algorithm=sha256, purpose=corruption-detection`；启动失败文案写出「不能阻止对安装目录有写权限
+  的进程替换文件并重新生成清单」；验签解释器覆盖 `CCDPH_SIGNATURE_POWERSHELL` 现在必须与
+  `CCDPH_ALLOW_SIGNATURE_OVERRIDE=1` 同时设置才生效。
+- **P2**（门禁）门禁存在「不发光的绿灯」：被 skip 的安全用例计入「已满足」，`npm audit` 在
+  `--skip-audit` / 空输出 / 非 JSON 三种模式下全部 PASS。现在自我 skip 只记为**盲区**，新增
+  **G8「安全用例无盲区」**（不加 `--allow-blind-spots` 即 NO-GO，加了也会把盲区印在报告与
+  `--json` 里），G6 每次都会打印「Electron/Chromium 不在 npm 依赖树内，CVE 扫描不覆盖」。
+- **P3** 更新包 1 GiB 上限此前只累加 ZIP **声明**的 `uncompressedSize`（可伪造），现在解压后按
+  真实体积复核；`api-auth.json` 改为 `fsync + rename` 原子写；`fitsJsonBudget` 对 `Infinity`
+  放行 / 对 `NaN` 变 0 的不一致改为失败关闭。
+- **P3** `/api/git-config/save` 的 `scope` 必须显式是 `local`/`global`，不再把缺失/非法值静默落到
+  最宽的 `--global`；`/api/terminal/stop` 保留幂等（仍 200）但如实回 `{ok:true,stopped:false,reason}`；
+  MCP stdio 的 `env` 含凭据类变量名时写日志并在响应带 `warning`（不拒绝，但绝不静默）。
+- **P3** 审批小窗补齐 `setWindowOpenHandler` / `will-navigate` / `will-redirect` 守卫；剪贴板权限
+  判定改用发起请求的 frame（`details.requestingUrl`），跨源 iframe 不再能拿到
+  `clipboard-sanitized-write`；打包态两窗统一 `devTools:false`。
+- **P3** 会话右键菜单补 `role="menuitem"`、Esc 关闭与 ↑/↓ 导航、关闭后焦点归位；`public/index.html`
+  的 54 个表单控件补 `aria-label`（76 个控件中「无可访问名称」降为 0）。
+- **P3** `tests/syntax-check.mjs` 从手写清单改为「显式应用文件 + 自动扫描 `tests/`、`browser/`」
+  （此前漏掉含 24KB `behavior.mjs` 在内的 4 个文件，49 → 53）；README 删掉指向**不存在**的
+  `test/` 目录与 6 个用例的段落，改为真实测试布局 + 门禁说明；`package.json` 补 `engines.node >= 20`。
+- **P3** CDP 端口匹配从字符串后缀 `endsWith(":9223")` 改为取最后一个冒号后的完整端口号比较
+  （兼容 `[::1]:9223`）。
+
+### Notes
+
+- 版本一致性：`package-lock.json` 根版本此前停留在 `0.3.2`，本版与 `package.json` 对齐。
+- **未修（已声明的接受项）**：① 完整性清单无法自校验 —— 对安装目录有写权限的进程总能重跑
+  `npm run integrity` 得到自洽清单，本版把这条边界写进清单用途声明、启动文案与 README，而不是
+  假装它不可绕过；② `stopDedicatedEdge` 身份复核与 `taskkill` 之间仍是毫秒级 PID TOCTOU；
+  ③ 签名验证失败仅告警（既定设计：不得成为启动单点故障）。
+- 门禁变化会影响发布流程：`node tests/gate.mjs` 现在有 **8 条规则**，未设置 `CCDPH_PACKAGED_EXE`
+  时 `packaged-signature-fallback` 自我 skip，因此**默认 NO-GO**；确需放行必须显式加
+  `--allow-blind-spots`（盲区仍会打印），或提供打包 exe 供该用例真实执行。
+- 改动 `public/**` 或依赖后发布前**必须**重跑 `npm run integrity`：清单包含 `package.json`、
+  `package-lock.json`，以及 `sdk.mjs` 运行期 `require()` 的全部依赖文件。
+
 ## [0.3.3] - 2026-09-27
 
 > 全量审查（一次性通读全部源文件）后的修复轮。以下条目的编号对应审查报告中的 P1/P2/P3。

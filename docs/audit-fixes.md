@@ -188,3 +188,114 @@
   不再降级；全局历史字节总量改为增量记账，publish 热路径不再扫描全部会话。
 - 发布流程：源码归档在 `D:\CCDPH-source`，桌面运行目录移除 tests/docs/test-output/旧备份；
   `desktop.cjs` 在打包运行时校验 `runtime-integrity.json` 中的 SHA-256 清单，检测损坏后阻止启动。
+
+## R9 独立复审整改索引（2026-09-28）
+
+> 依据：`CCDPH-独立审查报告-20260928.md`（从零独立通读 + 真机执行，结论 0×P0 / 0×P1 / 12×P2 / 14×P3）。
+> 代码内标记沿用审查报告的编号，写作 `R2-P2-x` / `R2-P3-x`（R2 = 第二份审查报告的批次）。
+> 随 **v0.3.4** 发布（`package.json` 0.3.3 → 0.3.4，含 CHANGELOG 条目）。
+
+### 数据安全与持久化
+
+- `R2-P2-1` 隔离备份清理漏掉 `.oversize-*`：真名是 `state.json.oversize-<ts>-<uuid8>`，而旧判据要求
+  前缀后**紧跟纯数字**，导致每个 ≥256MiB 的隔离文件永久堆积。改为「数字时间戳 + 可选短随机后缀」，
+  恢复说明文件（`.txt`）仍被排除。
+- `R2-P2-2` 原子写缺持久化栅栏：`writeFile + rename` 在掉电后可能留下零长/半截文件，下次启动被判为
+  损坏并空白启动。改为独立句柄 `write → fsync → rename`，POSIX 上再尽力 `sync` 目录项。
+- `R2-P2-3` 读失败与内容损坏不再混为一谈：带 errno 的读取失败（EACCES/EBUSY/EAGAIN/ETIMEDOUT…）
+  现在**不改名隔离**、原文件保持不动，并把 `stateWritesBlocked` 置位 —— 之后的任何 `save()` 直接如实
+  失败（400）而不是用空白数据覆盖「恢复说明里承诺保留」的原文件；损坏隔离**失败**时同样置位。
+  后台解析超时补 `ETIMEDOUT`，不再被当成坏 JSON。
+
+### 诚实性与契约
+
+- `R2-P2-6` 运行失败的 SSE 事件（会进 `state.json` 并上屏）改走 `sanitizeError`，与 HTTP 错误响应同口径。
+- `R2-P3-6` `sanitizeError` 补脱敏裸 `sk-*` / `Bearer *`（此前只有 `redactHookCommand` 处理它们）。
+- `R2-P2-10` `/api/worktrees` 与 `/api/git-config` 区分「本来不是 Git 仓库」（正常业务状态，仍 200）
+  与「git 调用失败」（未安装 / PATH 异常 / dubious ownership / 权限 / 15s 超时 → 抛错走 400 +
+  脱敏文案）。前端 `renderGitConfig` 的静默 `catch{}` 改为如实展示错误。
+- `R2-P3-1` `/api/git-config/save` 的 `scope` 必须显式是 `local`/`global`，不再把缺失/非法值静默落到
+  最宽的 `--global`。
+- `R2-P3-2` `/api/terminal/stop` 保留幂等契约（仍 200），但不再用裸 `{ok:true}` 谎称「停掉了」，
+  改为如实回 `{ok:true, stopped:false, reason}`。
+- `R2-P2-9` 会话右键菜单项统一走 `action()` 包装：失败有 toast，不再丢弃 Promise（「删除本地记录」
+  这类不可逆操作此前失败时完全无反馈）。
+- `R2-P2-7` 终端 SSE `onerror` 现在会收敛状态（`terminalExited=true` + 关闭流）、在输出区与设置区
+  显示中断提示并给出重连指引，不再让面板永久谎报「运行中」且按键被静默丢弃。
+- `R2-P3-7` MCP stdio 的 `env` 若含凭据类变量名（`*_TOKEN`/`*_API_KEY`/`*_AUTH`/`*_SECRET`/
+  `*_PASSWORD`），写日志并在响应里带 `warning`，前端 toast 展示 —— 不拒绝（很多 MCP server 正靠 env
+  取凭据），但绝不静默。
+
+### 可用性与隔离
+
+- `R2-P2-8` 专用 Edge 残留清扫不再无条件阻断启动：只在**调试端口确实仍在监听**时 fail-closed；
+  端口已关闭（或 netstat 不可用）时继续启动并留警告日志。恢复提示改为按端口定位监听进程，
+  不再让用户去结束一个可能属于他自己的普通浏览器的 PID。
+- `R2-P2-12` 桌面版数据目录改为「显式传入的 `WORKBENCH_DATA_DIR` 优先」，`startup-warnings.log`
+  也跟随该目录；打包冒烟用例（`tests/packaged-signature-fallback.mjs`）据此使用临时目录，
+  不再改写部署版真实的 `.data` / `.desktop-data`。
+- `R2-P2-12b` 用户级 MCP 配置 `MCP_FILE` 从写死 `~/.claude.json` 改为跟随 `CLAUDE_CONFIG_DIR` 的
+  父目录（默认行为不变）。此前任何只改 `CLAUDE_CONFIG_DIR` 的测试/临时运行都会改写**真实**用户目录
+  下的 `.claude.json`（实测已复现），与「离线套件全程使用临时数据目录」的承诺矛盾。
+- `R2-P3-4` `fitsJsonBudget` 对 `Infinity` 放行、对 `NaN` 变 0 的不一致改为失败关闭：任何非有限
+  `maxBytes` 一律按 0 处理。
+- `R2-P3-5` `api-auth.json` 改用与 `state.json` 相同的 `fsync + rename` 持久化原子写，写中途崩溃
+  不再留下截断的密钥库（那会导致「不可读 → 拒绝覆盖 → 手工清理前无法保存密钥」）。
+
+### 完整性链与门禁
+
+- `R2-P2-4` `runtime-integrity.json` 现在**扫描 `sdk.mjs` 运行期 `require()`** 并解析到真实文件，
+  自动纳入 `ajv/dist/runtime/*`、`ajv-formats/dist/formats` 等依赖（此前 `ajv` 命中数为 0，
+  替换这些文件后启动校验全绿）。解析失败直接抛错，拒绝生成不完整的清单。
+- `R2-P2-5` 澄清完整性链的边界而不是假装它是强边界：清单必须声明
+  `algorithm=sha256, purpose=corruption-detection`；启动失败文案明确写出「不能阻止对安装目录有写
+  权限的进程替换文件并重新生成清单」；验签解释器覆盖 `CCDPH_SIGNATURE_POWERSHELL` 现在必须与
+  `CCDPH_ALLOW_SIGNATURE_OVERRIDE=1` 同时设置才生效（单个环境变量不再能重定向验签）。
+- `R2-P2-11` 门禁不再有「不发光的绿灯」：安全用例（终端恢复、打包签名降级）自我 skip 只记为**盲区**，
+  新增 G8 规则「安全用例无盲区」，不加 `--allow-blind-spots` 时门禁 **NO-GO**；`npm audit` 的
+  `--skip-audit` / 空输出 / 非 JSON 三种失败模式同样从 PASS 改为盲区，并每次都打印
+  「Electron/Chromium 不在 npm 依赖树内，CVE 扫描不覆盖」。
+- `R2-P3-9` 审批小窗补齐 `setWindowOpenHandler` / `will-navigate` / `will-redirect` 守卫（此前只有
+  主窗有）。
+- `R2-P3-10` 剪贴板权限判定改用 `details.requestingUrl` / `requestingOrigin`（真正发起请求的 frame），
+  不再用 `wc.getURL()` 的顶层文档 origin —— 同源页面里内嵌的跨源 iframe 不再能拿到
+  `clipboard-sanitized-write`。
+- `R2-P3-11` 打包态两个窗口统一 `devTools:false`；审批窗显式声明 `webSecurity:true`。
+
+### 卫生、a11y 与口径
+
+- `R2-P3-3` 更新包 1 GiB 上限在解压**之后**按真实文件体积复核（此前只累加 ZIP 中央目录声明的
+  `uncompressedSize`，声明值可伪造）。
+- `R2-P3-8` `.gitignore` 补 `.env` / `.env.*`（保留 `.env.example`）。
+- `R2-P3-12` 会话右键菜单：子项补 `role="menuitem"`、支持 Esc 关闭与 ↑/↓ 导航、关闭后焦点还给触发项。
+- `R2-P3-13` `public/index.html` 的 54 个此前无可访问名称的表单控件全部补 `aria-label`
+  （审计后实测：76 个控件中「无名」为 0）。
+- `R2-P3-14` `tests/syntax-check.mjs` 从手写清单改为「显式应用文件 + 自动扫描 `tests/`、`browser/`」
+  （此前漏掉含 24KB `behavior.mjs` 在内的 4 个文件；覆盖数 49 → 53）；README 删掉指向**不存在**的
+  `test/` 目录与 6 个用例的段落，改为真实测试布局与门禁说明；`package-lock.json` 根版本 0.3.2 → 0.3.3；
+  `package.json` 补 `engines.node >= 20`。
+- `R2-P3-15`（审查报告中的 speculative 项）CDP 端口匹配从字符串后缀 `endsWith(":9223")` 改为取最后一个
+  冒号后的**完整端口号**再比较（同时兼容 `[::1]:9223`）。
+
+### 本轮有意保留（未修，属已声明的接受项）
+
+- **完整性清单不能自校验**：清单无法覆盖自己的哈希，且生成脚本本身也在清单里。任何对安装目录有写
+  权限的进程都能重跑 `npm run integrity` 得到一份自洽清单。这是便携部署的固有边界，本轮的做法是
+  **把边界写清楚**（清单用途声明 + 启动文案 + README），而不是假装它不可绕过。
+- **`stopDedicatedEdge` 的 PID TOCTOU**：身份复核与 `taskkill /T /F` 之间仍是裸 PID。窗口在毫秒级，
+  且已先复核身份；改为「即刻重新枚举 + 句柄级终止」在当前依赖（tasklist/netstat/taskkill）下没有
+  可靠实现，故保留并在此登记。
+- **签名验证失败仅告警**：这是既定设计（不得成为启动单点故障），本轮只澄清其与「完整性失败即阻止
+  启动」两条路径的语义差异，未改变行为。
+
+### 本轮验证
+
+- `node tests/syntax-check.mjs` → `syntax ok: 53 files`- `npm test` → 45/45
+- `node tests/api-tests.mjs` → 69/69（P0 失败 0）
+- `node tests/gate.mjs` → **NO-GO**，唯一 FAIL 是 G8 盲区 `packaged-signature-fallback`
+  （未设置 `CCDPH_PACKAGED_EXE`）；`--allow-blind-spots` 后 GO 8/8。
+- 一次性探针（仓库外 `d:\ccdph-audit-tmp\r2-verify.mjs`）实测确认：`.oversize-*` 被清理且 readme 保留；
+  非 git 目录仍是 200 业务状态；缺失/非法 `scope` 回 400；`terminal/stop` 未知 id 回
+  `{ok:true,stopped:false}`；MCP 凭据 env 带出明文落盘告警且**未写入真实 `~/.claude.json`**；
+  `state.json` 读取失败时读接口仍 200、写接口 400、原文件（含内容）零改动、不生成 `.corrupt-*`。
+

@@ -16,7 +16,7 @@
     },
     {
       "path": "browser/service.mjs",
-      "sha256": "c7e97ea277459208cb68acb4ee551887a378dab005bd4f5e3e500a5a06925d17"
+      "sha256": "54e5896f6b8d0664706979f9940cbd305d01823240f018d45b623daf86de5085"
     },
     {
       "path": "build/icon-512.png",
@@ -36,7 +36,7 @@
     },
     {
       "path": "desktop.cjs",
-      "sha256": "39c0baae8671e519b060759c63e1f772234563b3231c9483e569085ecc6aa6b3"
+      "sha256": "8387131e0af96e5bb5c2da7f42b3625a43dde6229c5b9cb2c080fffc20277b9f"
     },
     {
       "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
@@ -51,6 +51,26 @@
       "sha256": "629e2f28412e0ebef10823f589b44a9cdf6e607774dc548921ce1b1af9fad5d2"
     },
     {
+      "path": "node_modules/ajv-formats/dist/formats.js",
+      "sha256": "b61693a26869970a92cc1fe832c931ccd3afe8b6d66802b19c48306349e84880"
+    },
+    {
+      "path": "node_modules/ajv/dist/runtime/equal.js",
+      "sha256": "c94467da09ee94e5d194483a7ab821b9bb3bf1c04397270f2ab53dea9de59274"
+    },
+    {
+      "path": "node_modules/ajv/dist/runtime/ucs2length.js",
+      "sha256": "1df012dd3d23fced07255a7204798004509687cb1f431ae0ab976db436bbd890"
+    },
+    {
+      "path": "node_modules/ajv/dist/runtime/uri.js",
+      "sha256": "d1d61baf97ed87d7310df847a78ed73d19c8cc003207bf5aaec977500bdb1578"
+    },
+    {
+      "path": "node_modules/ajv/dist/runtime/validation_error.js",
+      "sha256": "11bf5b4affc8114e5e7cdf65b93006c2d997ab60ada1152c22e136f9b828b815"
+    },
+    {
       "path": "node_modules/dompurify/dist/purify.es.mjs",
       "sha256": "e7d8182ea0aae9daa46c3294a486067b3f4461bd18f8ca76e499c623e9bda6e3"
     },
@@ -60,11 +80,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "96b6fabcdf1f7d6207845f257f583cffab5cbad85fd2d0d2993fe5e7a88e8095"
+      "sha256": "54e7ed105812c95e149f921c69d68f53782045d320e10a9049d729e6218aaab6"
     },
     {
       "path": "package.json",
-      "sha256": "cb90203f4c0c25cb1f6ed5cdf2f25886c909cf3a5bf8523b91a65ae29bf6f858"
+      "sha256": "f61433c74355efdfb391d1b7cf47081928d3a42189397c5ec6be87e7924d08de"
     },
     {
       "path": "preload.cjs",
@@ -76,11 +96,11 @@
     },
     {
       "path": "public/app.js",
-      "sha256": "13992b9c7632db89ad66f6aaf40fd4b97f9062df28134b3b84b65263f5f5154f"
+      "sha256": "9f4190c170963bde38c42a0b30f8d16c4480dc5750efba9ca996301e4557e2f8"
     },
     {
       "path": "public/index.html",
-      "sha256": "56719a6ce39fb2d9eb9db31c60e4877c61a0f84ebb77d44b0807d7df29449b4c"
+      "sha256": "fa8f19a6653e2c979083c69195a7135e6d3520a0c10b88dd607aaaef459acceb"
     },
     {
       "path": "public/markdown-renderer.js",
@@ -124,19 +144,19 @@
     },
     {
       "path": "routes/integration.mjs",
-      "sha256": "fc71f11d9054d56b4232e5cdb972cebf0e23163f76b3e99fa3bba306eeb91e23"
+      "sha256": "a117dc67bf1c9af19d31f40170c0736589d0d059db2b0f52eaa6dfe9a9a34c28"
     },
     {
       "path": "routes/workspace-io.mjs",
-      "sha256": "6cad1b46c1e8f99dbc911bfa4dd509f4dcfe5f3ab660e3dab9d4cfa4d607e27b"
+      "sha256": "9430b11091cf0c0648d7c66782d159d9d20b51547b071c462bc58c0b251a0fd1"
     },
     {
       "path": "routes/workspace-mutation.mjs",
-      "sha256": "15ccad337e985ebd420aca155a13e84787d0c3dd0566f3a324406381dbd7e21b"
+      "sha256": "ef4f9d0420a742b38b6a09978ee9b5242c3b8837bbe8114dcdbcefa29658e3af"
     },
     {
       "path": "scripts/generate-runtime-integrity.mjs",
-      "sha256": "f3736cfd31808841e5bebfa885cbc6b62165f52f74984b76a313e5297c9d3972"
+      "sha256": "2e2942f0dd7bf4724a63c4c170bfdad8b7c658fdf1cba56057e42b9971d178df"
     },
     {
       "path": "server-policies.mjs",
@@ -144,7 +164,7 @@
     },
     {
       "path": "server.mjs",
-      "sha256": "baaf9bb7c276612ce87ff1f1ba53e899897736a40e75e7811f1407eb2006ccc9"
+      "sha256": "070fd2c84c1eb1c26ff94918ceff3be10efa4baf63c1271c4e2b23591101e509"
     },
     {
       "path": "state-load-worker.mjs",
@@ -152,7 +172,7 @@
     },
     {
       "path": "state-safety.mjs",
-      "sha256": "512e866a51397b1860cc6cd186a14173c3d3783cd2eeb86af61e01efb25f13fb"
+      "sha256": "7bbae63eb214361adf23a7ef691dd0d399225469bba17452b11e39acfb6c963d"
     },
     {
       "path": "terminal-registry.mjs",

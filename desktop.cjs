@@ -89,6 +89,17 @@ async function verifyPackagedRuntime() {
     const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
     if (!Array.isArray(manifest.files) || !manifest.files.length)
       throw new Error("完整性清单为空");
+    // CCDPH-FIX(R2-P2-5): 明确清单的**用途契约**。这份清单只能检测"文件损坏 / 被静默替换"，
+    // 它不是、也不可能是一个能抵挡"对安装目录有写权限的进程"的强边界 —— 对方可以直接重跑
+    // scripts/generate-runtime-integrity.mjs 重新生成一份自洽的清单。把用途写死在清单里并
+    // 在启动时核对，至少保证"我们核对的是同一份约定的东西"，而不是任意一份 JSON。
+    if (
+      manifest.algorithm !== "sha256" ||
+      manifest.purpose !== "corruption-detection"
+    )
+      throw new Error(
+        "完整性清单用途/算法声明不符（要求 algorithm=sha256, purpose=corruption-detection）",
+      );
     const manifestPaths = new Set(
       manifest.files.map((item) => String(item?.path || "").replace(/\\/g, "/")),
     );
@@ -115,6 +126,21 @@ async function verifyPackagedRuntime() {
     return false;
   }
 }
+// CCDPH-FIX(R2-P2-5): 原来验签用的解释器直接取 `CCDPH_SIGNATURE_POWERSHELL`，于是任何能
+// 设置环境变量的进程都能把"签名验证"指向一个桩程序（打包冒烟用例正是这么用的）。现在这个
+// 覆盖只在**同时**存在第二个显式开关时才生效；否则一律用 System32 下的真 PowerShell，
+// 并把"发现但忽略覆盖变量"记进日志（不静默）。
+const SIGNATURE_OVERRIDE_ALLOWED =
+  process.env.CCDPH_ALLOW_SIGNATURE_OVERRIDE === "1";
+function signatureInterpreter() {
+  const override = String(process.env.CCDPH_SIGNATURE_POWERSHELL || "").trim();
+  if (!override) return POWERSHELL_EXE;
+  if (SIGNATURE_OVERRIDE_ALLOWED) return override;
+  console.warn(
+    "[ccdph] 已忽略 CCDPH_SIGNATURE_POWERSHELL（需与 CCDPH_ALLOW_SIGNATURE_OVERRIDE=1 同时设置才会生效）",
+  );
+  return POWERSHELL_EXE;
+}
 function verifyClaudeExecutableSignature() {
   if (!app.isPackaged || process.platform !== "win32")
     return Promise.resolve({ ok: true, reason: "not-applicable" });
@@ -127,7 +153,7 @@ function verifyClaudeExecutableSignature() {
   );
   return new Promise((resolve) => {
     execFile(
-      process.env.CCDPH_SIGNATURE_POWERSHELL || POWERSHELL_EXE,
+      signatureInterpreter(),
       [
         "-NoLogo",
         "-NoProfile",
@@ -157,8 +183,22 @@ function verifyClaudeExecutableSignature() {
     );
   });
 }
-app.setPath("userData", path.join(portableRoot, ".desktop-data"));
-process.env.WORKBENCH_DATA_DIR = path.join(portableRoot, ".data");
+// CCDPH-FIX(R2-P2-12): 原来这里无条件把数据目录覆盖成 <安装目录>/.data —— 于是
+// tests/packaged-signature-fallback.mjs 只想做一次「签名校验失败仍能启动」的冒烟，
+// 也必然改写部署版**真实**的 .data（runtime.json / startup-warnings.log）与 .desktop-data，
+// 与「离线套件全程使用临时数据目录」的承诺、以及「绝不触碰 D:\CCDPH\.data」的约定都冲突。
+// 现在：调用方显式设置的 WORKBENCH_DATA_DIR 优先（便携目录仍是默认值，产品行为不变）。
+const dataDirOverride = String(process.env.WORKBENCH_DATA_DIR || "").trim();
+const dataRoot = dataDirOverride
+  ? path.resolve(dataDirOverride)
+  : path.join(portableRoot, ".data");
+app.setPath(
+  "userData",
+  dataDirOverride
+    ? path.join(dataRoot, ".desktop-data")
+    : path.join(portableRoot, ".desktop-data"),
+);
+process.env.WORKBENCH_DATA_DIR = dataRoot;
 // 让本地服务知道自己在桌面版里运行（自动更新等能力依赖此标记）
 process.env.WORKBENCH_DESKTOP = "1";
 
@@ -188,9 +228,16 @@ else {
     .whenReady()
     .then(async () => {
       if (!(await verifyPackagedRuntime())) {
+        // CCDPH-FIX(R2-P2-5): 说明这份校验"能做什么 / 不能做什么"。原来的文案只写
+        // "运行时文件已损坏或与清单不一致"，很容易让人以为它是能抵挡篡改者的安全边界 ——
+        // 实际上任何对安装目录有写权限的进程都能替换文件后重新生成清单。
         dialog.showErrorBox(
           "CCDPH 启动被阻止",
-          "运行时文件已损坏或与当前发布清单不一致。\n请重新部署最新版本。",
+          "运行时文件已损坏，或与随附的完整性清单不一致。\n\n" +
+            "说明：该清单用于检测文件损坏/被替换（corruption-detection），" +
+            "不能阻止对安装目录有写权限的进程替换文件并重新生成清单。\n" +
+            "若此目录对普通用户可写，建议改为安装到受保护的位置。\n\n" +
+            "请重新部署最新版本后重试。",
         );
         app.quit();
         return;
@@ -203,9 +250,10 @@ else {
             `Claude Code 签名无法验证，CCDPH 已降级继续启动。\n` +
             `原因：${String(signature.reason || "未知").slice(0, 1000)}\n` +
             "运行时 SHA-256 清单仍已通过；如 Claude Code 无法执行，请重新部署或检查 PowerShell/证书策略。";
+          // CCDPH-FIX(R2-P2-12): 跟着 WORKBENCH_DATA_DIR 走（默认仍解析到便携目录 .data），
+          // 否则这个日志会写进部署版的真实数据目录。
           const warningFile = path.join(
-            portableRoot,
-            ".data",
+            process.env.WORKBENCH_DATA_DIR || path.join(portableRoot, ".data"),
             "startup-warnings.log",
           );
           await fs.mkdir(path.dirname(warningFile), { recursive: true }).catch(() => {});
@@ -276,6 +324,10 @@ else {
           contextIsolation: true,
           sandbox: true,
           webSecurity: true,
+          // CCDPH-FIX(R2-P3-11): 打包态此前没有关闭 DevTools（当前无菜单入口，属潜在风险：
+          // 任何能拿到窗口焦点的途径都能打开开发者工具并直接调用 preload 暴露的接口）。
+          // 开发态保持开启，便于排查。
+          devTools: !app.isPackaged,
         },
       });
       const syncOverlayTheme = () => {
@@ -335,20 +387,38 @@ else {
       // 等于连本应用自己的受信页面也拒绝，导致桌面版所有「复制」入口永久失效
       //（实测真实 Electron 下 writeText 抛 NotAllowedError，系统剪贴板无变化）。
       // 只放行来自 trustedOrigin 的剪贴板写入，其余（含剪贴板读取等）一律拒绝。
-      const allowClipboardWrite = (wc, permission) =>
+      // CCDPH-FIX(R2-P3-10): 原来用 wc.getURL()（**顶层文档**的 origin）判断，于是同源页面
+      // 里内嵌的跨源 iframe 也能拿到 clipboard-sanitized-write。改为优先使用 Electron 给出
+      // 的 requestingUrl / requestingOrigin（真正发起请求的那个 frame 的地址）。
+      const allowClipboardWrite = (permission, urlOrOrigin) =>
         permission === "clipboard-sanitized-write" &&
         (() => {
           try {
-            return new URL(wc?.getURL?.() || "").origin === trustedOrigin;
+            const raw = String(urlOrOrigin || "");
+            if (!raw) return false;
+            const origin = /^[a-z][a-z0-9+.-]*:/i.test(raw)
+              ? new URL(raw).origin
+              : raw;
+            return origin === trustedOrigin;
           } catch {
             return false;
           }
         })();
-      session.defaultSession.setPermissionRequestHandler((wc, permission, callback) =>
-        callback(allowClipboardWrite(wc, permission)),
+      session.defaultSession.setPermissionRequestHandler(
+        (wc, permission, callback, details) =>
+          callback(
+            allowClipboardWrite(
+              permission,
+              details?.requestingUrl || wc?.getURL?.() || "",
+            ),
+          ),
       );
-      session.defaultSession.setPermissionCheckHandler((wc, permission) =>
-        allowClipboardWrite(wc, permission),
+      session.defaultSession.setPermissionCheckHandler(
+        (wc, permission, requestingOrigin, details) =>
+          allowClipboardWrite(
+            permission,
+            details?.requestingUrl || requestingOrigin || wc?.getURL?.() || "",
+          ),
       );
       window.webContents.setWindowOpenHandler(({ url }) => {
         // Only normal web links can leave the desktop window.
@@ -374,6 +444,17 @@ else {
       };
       window.webContents.on("will-navigate", guardTopLevelNavigation);
       window.webContents.on("will-redirect", guardTopLevelNavigation);
+      // CCDPH-FIX(R2-P3-9): 审批小窗此前**没有任何**导航/开窗守卫（主窗有），而
+      // trustedSender 只按**窗口身份**放行、不校验 URL/origin —— 一旦小窗模板或
+      // JSON.stringify(...).replace(/</g,…) 转义出现回归，被跳转到外站的页面仍能静默
+      // 批准工具调用并退出应用（主进程会用 token 代为提交）。现在补上同一套守卫：
+      // 小窗的唯一合法内容由 loadURL(data:…) 注入，页面内任何导航都属异常 → 全拒。
+      const blockNavigation = (event) => event.preventDefault();
+      const hardenApprovalWindow = (popup) => {
+        popup.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        popup.webContents.on("will-navigate", blockNavigation);
+        popup.webContents.on("will-redirect", blockNavigation);
+      };
       engine.setFolderPicker(async () => {
         const result = await dialog.showOpenDialog(window, {
           title: "选择项目文件夹",
@@ -416,9 +497,15 @@ else {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: true,
+            // CCDPH-FIX(R2-P3-11): 小窗此前依赖 webSecurity 默认值，且未显式关闭 DevTools ——
+            // 两个窗口的配置口径不一致。这里与主窗对齐。
+            webSecurity: true,
+            devTools: !app.isPackaged,
           },
         });
         approvalWindows.set(payload.requestId, popup);
+        // CCDPH-FIX(R2-P3-9): 小窗一创建就套上导航/开窗守卫（见 hardenApprovalWindow）。
+        hardenApprovalWindow(popup);
         const loadTimeout = setTimeout(() => {
           // CCDPH-FIX(ELE-2): 10 秒内没能显示出来即视为加载失败，必须先交还审批权再销毁小窗
           if (!popup.isDestroyed() && !popup.isVisible()) {

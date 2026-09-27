@@ -200,7 +200,13 @@ export function fitsJsonBudget(
   maxBytes,
   { maxDepth = STATE_CONTENT_MAX_DEPTH, maxNodes = 20_000 } = {},
 ) {
-  maxBytes = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  // CCDPH-FIX(R2-P3-4): `Number(x) || 0` 对 Infinity 放行（Infinity 是真值），于是
+  // 「预算」被静默变成无穷大、fitsJsonBudget 恒 true、体积闸门彻底失效；而对 NaN/undefined
+  // 又变成 0（恒 false）。与 foldDeepStateSubtrees 的 `Number.isFinite(...)` 守卫不一致。
+  // 这里统一为**失败关闭**：任何非有限值都按 0 处理（=放不下），宁可多裁剪也不少裁剪。
+  maxBytes = Number.isFinite(Number(maxBytes))
+    ? Math.max(0, Math.floor(Number(maxBytes)))
+    : 0;
   const stack = [{ value, depth: 0 }];
   const seen = new WeakSet();
   let bytes = 0;

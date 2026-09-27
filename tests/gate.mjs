@@ -9,12 +9,17 @@
 //   node tests/gate.mjs --json          # 额外输出机器可读结果
 //   node tests/gate.mjs --inject=G2     # 自检：注入指定规则失败，验证门禁能正确拦截
 //   node tests/gate.mjs --skip-audit    # 跳过 npm audit（离线环境）
+//   node tests/gate.mjs --allow-blind-spots
+//                                       # CCDPH-FIX(R2-P2-11): 显式承认本次门禁存在安全盲区
+//                                       # （安全用例自我 skip / audit 不可用）。不加这个开关时
+//                                       # 盲区会让门禁 NO-GO，避免"不发光的绿灯"。
 //
 // 退出码：0 = GO；1 = NO-GO；2 = 门禁自身执行异常（无法判定）
 //
 // 约束：本脚本只读源码 + 运行测试，绝不修改任何产品源码 / .data / 运行目录。
 // ---------------------------------------------------------------------------
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import path from "node:path";
@@ -25,6 +30,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
 const asJson = argv.includes("--json");
 const skipAudit = argv.includes("--skip-audit");
+const allowBlindSpots = argv.includes("--allow-blind-spots");
 const inject = (argv.find((a) => a.startsWith("--inject=")) || "").split("=")[1] || "";
 
 // ---- 门禁阈值（可调集中于此） ------------------------------------------------
@@ -47,12 +53,26 @@ const REQUIRED_MODULE_MARKERS = [
   "renderer behavior ok",
   "offline checks passed",
 ];
-const OPTIONAL_MODULE_MARKERS = [
-  "terminal recovery ok",
-  "terminal recovery skipped",
-  // CCDPH-FIX(P2-14): 打包版签名降级用例（需 CCDPH_PACKAGED_EXE，未设置时自我 skip）
-  "packaged signature fallback ok",
-  "packaged signature fallback skipped",
+// 安全用例：必须**真的跑过**才算通过。自我 skip 只记录为「盲区」，绝不再当成满足条件。
+// CCDPH-FIX(R2-P2-11): 原来这两条被塞进 OPTIONAL_MODULE_MARKERS 并只要求
+// `optionalSeen.length >= 1` —— 只要用例打印一句 "…skipped" 就算通过，于是最常见的
+// 运行环境下这两条安全规则都是"不发光的绿灯"。
+const SECURITY_CASE_MARKERS = [
+  {
+    id: "terminal-recovery",
+    ok: "terminal recovery ok",
+    skip: "terminal recovery skipped",
+    // 该用例本身只在 Windows 上有意义（PTY 后代清扫），非 Windows 的 skip 是环境限制，
+    // 属于"平台不适用"而不是"这次没验证"。
+    skipIsBlindSpot: process.platform === "win32",
+  },
+  {
+    id: "packaged-signature-fallback",
+    ok: "packaged signature fallback ok",
+    skip: "packaged signature fallback skipped",
+    // 需要 CCDPH_PACKAGED_EXE；未设置时必然 skip —— 这正是必须显式承认的盲区。
+    skipIsBlindSpot: true,
+  },
 ];
 
 const rules = [];
@@ -98,15 +118,24 @@ async function gateRegression() {
   const bySeverity = output.match(/分级分布:\s*(\{[^}]*\})/)?.[1] || "{}";
 
   const missing = REQUIRED_MODULE_MARKERS.filter((m) => !output.includes(m));
-  const optionalSeen = OPTIONAL_MODULE_MARKERS.filter((m) => output.includes(m));
-  const allMarkers = missing.length === 0 && optionalSeen.length >= 1;
+  const securityCases = SECURITY_CASE_MARKERS.map((item) => ({
+    id: item.id,
+    state: output.includes(item.ok)
+      ? "passed"
+      : output.includes(item.skip)
+        ? "skipped"
+        : "missing",
+    blindSpot: item.skipIsBlindSpot,
+  }));
+  const missingSecurity = securityCases.filter((c) => c.state === "missing");
+  const markersOk = missing.length === 0 && missingSecurity.length === 0;
 
   // G1：runner 退出码 + 模块标记齐全
   record(
     "G1",
     "回归套件执行完整（run.mjs 退出码 0 且全部模块标记齐全）",
-    exitCode === 0 && allMarkers,
-    `exitCode=${exitCode}; missingMarkers=[${missing.join(",")}]; optionalSeen=[${optionalSeen.join(",")}]`,
+    exitCode === 0 && markersOk,
+    `exitCode=${exitCode}; missingMarkers=[${missing.join(",")}]; missingSecurityCases=[${missingSecurity.map((c) => c.id).join(",")}]`,
   );
   // G2：通过率 100%
   record(
@@ -130,7 +159,7 @@ async function gateRegression() {
     `P1 失败数=${p1Fail}`,
   );
 
-  return { total, passed, failed, passRate, p0Fail, p1Fail, bySeverity, exitCode, output };
+  return { total, passed, failed, passRate, p0Fail, p1Fail, bySeverity, exitCode, output, securityCases };
 }
 
 // ---- G5：语法检查 ------------------------------------------------------------
@@ -148,9 +177,25 @@ async function gateSyntax() {
 }
 
 // ---- G6：依赖高危漏洞（best-effort，离线降级为 SKIP 不阻塞） -----------------
+// CCDPH-FIX(R2-P2-11): 原来 `--skip-audit`、stdout 为空、输出非 JSON 三种失败模式**全部 PASS**。
+// 于是"离线/无锁文件/审计器输出异常"这些最常见的环境都会得到一条不发光的绿灯。
+// 现在这三种都记为「盲区」：不加 --allow-blind-spots 时门禁 NO-GO，加了也要把盲区印在报告里。
+// 另外每次都显式报出 npm audit 的**覆盖盲区**（Electron/Chromium 运行时不在依赖树内）。
+async function auditCoverageNote() {
+  const electronInTree = await readFile(path.join(ROOT, "package-lock.json"), "utf8")
+    .then((text) => /"node_modules\/electron"/.test(text))
+    .catch(() => false);
+  return electronInTree
+    ? ""
+    : "；覆盖盲区：Electron/Chromium 运行时不在 npm 依赖树内，CVE 扫描不覆盖";
+}
 async function gateAudit() {
+  const name = `npm audit high+critical = ${THRESHOLDS.maxHighVulns}`;
+  const coverage = await auditCoverageNote();
+  const blindDetail = (reason) =>
+    `盲区：${reason}${coverage}${allowBlindSpots ? "（已用 --allow-blind-spots 显式承认）" : "；加 --allow-blind-spots 可显式承认后继续"}`;
   if (skipAudit) {
-    record("G6", `npm audit high+critical = ${THRESHOLDS.maxHighVulns}`, true, "SKIP（--skip-audit）");
+    record("G6", name, allowBlindSpots, blindDetail("--skip-audit 显式跳过了漏洞扫描"));
     return;
   }
   let stdout = "";
@@ -172,9 +217,11 @@ async function gateAudit() {
   if (!stdout.trim()) {
     record(
       "G6",
-      `npm audit high+critical = ${THRESHOLDS.maxHighVulns}`,
-      true,
-      `SKIP（无法取得审计结果，疑似离线/无锁文件）: ${raw.slice(0, 200) || "empty"}`,
+      name,
+      allowBlindSpots,
+      blindDetail(
+        `无法取得审计结果，疑似离线/无锁文件: ${raw.slice(0, 200) || "empty"}`,
+      ),
     );
     return;
   }
@@ -186,14 +233,33 @@ async function gateAudit() {
     high = Number(v.high || 0);
     critical = Number(v.critical || 0);
   } catch {
-    record("G6", `npm audit high+critical = ${THRESHOLDS.maxHighVulns}`, true, "SKIP（审计输出非 JSON）");
+    record("G6", name, allowBlindSpots, blindDetail("审计输出非 JSON，无法判定"));
     return;
   }
   record(
     "G6",
-    `npm audit high+critical = ${THRESHOLDS.maxHighVulns}`,
+    name,
     high + critical <= THRESHOLDS.maxHighVulns,
-    `high=${high}, critical=${critical}`,
+    `high=${high}, critical=${critical}${coverage}`,
+  );
+}
+
+// ---- G8：安全用例无盲区（自我 skip 不算通过） --------------------------------
+// CCDPH-FIX(R2-P2-11): 新增独立规则，把「这次到底有没有真的验证过安全用例」变成一条
+// 会失败的门禁，而不是藏在 G1 的标记计数里。
+function gateSecurityCases(securityCases) {
+  const skipped = securityCases.filter((c) => c.state === "skipped");
+  const blind = skipped.filter((c) => c.blindSpot);
+  const inapplicable = skipped.filter((c) => !c.blindSpot);
+  const ok = blind.length === 0 || allowBlindSpots;
+  record(
+    "G8",
+    "安全用例无盲区（自我 skip 不当作通过）",
+    ok,
+    `passed=[${securityCases.filter((c) => c.state === "passed").map((c) => c.id).join(",")}]; ` +
+      `盲区=[${blind.map((c) => c.id).join(",")}]` +
+      `${allowBlindSpots && blind.length ? "（已用 --allow-blind-spots 显式承认）" : ""}; ` +
+      `平台不适用=[${inapplicable.map((c) => c.id).join(",")}]`,
   );
 }
 
@@ -226,6 +292,7 @@ const regression = await gateRegression();
 await gateSyntax();
 await gateAudit();
 await gateApiSuite();
+gateSecurityCases(regression.securityCases);
 
 // 自检注入：仅用于演示门禁「确实能拦截」，不改动任何真实指标。
 if (inject) {
@@ -270,6 +337,7 @@ if (asJson) {
           bySeverity: regression.bySeverity,
         },
         rules,
+        securityCases: regression.securityCases,
         thresholds: THRESHOLDS,
       },
       null,

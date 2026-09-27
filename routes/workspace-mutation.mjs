@@ -33,6 +33,17 @@ export function createWorkspaceMutationRoute(deps) {
     worktreeBaseDir,
   } = deps;
 
+  // CCDPH-FIX(R2-P2-10): 「本来不是 Git 仓库」是正常业务状态，而「git 调用失败」
+  //（未安装 / PATH 异常 / dubious ownership / 权限 / 15s 超时）是真实故障。原来的
+  // 裸 `catch {}` 把两者混为一谈并以 200 + error 返回，用户完全无法定位故障。
+  const NOT_GIT_REPO_RE = /not a git repository|not a repository|不是 git 仓库/i;
+  const isNotGitRepositoryError = (error) =>
+    NOT_GIT_REPO_RE.test(`${error?.stderr || ""}\n${error?.message || ""}`);
+  // `git config <key>` 在**未设置**时以 exit 1 + 空 stderr 结束，这属于正常「未配置」；
+  // 其余（spawn ENOENT、被杀、有 stderr 的退出）都是真实故障。
+  const isUnsetGitConfigError = (error) =>
+    error?.code === 1 && !error?.killed && !String(error?.stderr || "").trim();
+
   async function cleanupReservedWorktreeTarget(target, baseDir, reason) {
     const targetStat = await fs.lstat(target).catch(() => null);
     if (!targetStat?.isDirectory() || targetStat.isSymbolicLink()) return false;
@@ -71,11 +82,19 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
       throw new Error(e?.message || "请先选择项目");
     }
     let inside = false;
+    let probeFailure = "";
     try {
       inside =
         (await git(root, ["rev-parse", "--is-inside-work-tree"])).trim() ===
         "true";
-    } catch { }
+    } catch (error) {
+      // CCDPH-FIX(R2-P2-10): 只有确认是「不是仓库」才落进下面的 200 业务状态；
+      // 其它失败一律抛出（全局处理器回 400 + 脱敏文案），前端 renderWorktrees 的
+      // catch 会照旧展示「读取 Worktree 失败：…」。
+      if (!isNotGitRepositoryError(error)) probeFailure = sanitizeError(error);
+    }
+    if (probeFailure)
+      throw new Error(`无法读取 Git 仓库状态：${probeFailure}`);
     if (!inside)
       return json(res, {
         git: false,
@@ -225,14 +244,23 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
             key,
           ])
         ).trim();
-      } catch {
-        return "";
+      } catch (error) {
+        // CCDPH-FIX(R2-P2-10): 原来一律回空串，把「未设置」与「git 不可用」混在一起。
+        // 未设置（exit 1 + 空 stderr）仍回空串；真实故障向上抛出。
+        if (isUnsetGitConfigError(error)) return "";
+        throw error;
       }
     };
-    const [userName, userEmail] = await Promise.all([
-      readConfig("global", "user.name", os.homedir()),
-      readConfig("global", "user.email", os.homedir()),
-    ]);
+    let userName = "";
+    let userEmail = "";
+    try {
+      [userName, userEmail] = await Promise.all([
+        readConfig("global", "user.name", os.homedir()),
+        readConfig("global", "user.email", os.homedir()),
+      ]);
+    } catch (error) {
+      throw new Error(`无法读取全局 Git 配置：${sanitizeError(error)}`);
+    }
     let remotes = [];
     let inside = false;
     let branch = "";
@@ -309,7 +337,14 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
         localName = await readConfig("local", "user.name", root);
         localEmail = await readConfig("local", "user.email", root);
       }
-    } catch { }
+    } catch (error) {
+      // CCDPH-FIX(R2-P2-10): 块内其余读取各自是尽力而为（分支/上游/远程/提交都可能
+      // 合理地失败），但「仓库探测失败」与「配置读取故障」必须如实上报，不能静默按
+      // 「不是仓库」处理。
+      if (!isNotGitRepositoryError(error))
+        throw new Error(`无法读取 Git 配置：${sanitizeError(error)}`);
+      inside = false;
+    }
     const origin = remotes.find((item) => item.name === "origin");
     return json(res, {
       inside,
@@ -331,7 +366,12 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
   }
   if (req.method === "POST" && pathname === "/api/git-config/save") {
     const input = requireObject(await body(req));
-    const scope = input.scope === "local" ? "local" : "global";
+    // CCDPH-FIX(R2-P3-1): 原来是 `input.scope === "local" ? "local" : "global"` ——
+    // 缺失/非法 scope 会静默落到最宽的 `--global`（写用户 ~/.gitconfig），与同模块其它
+    // 枚举「严格校验后拒绝」的口径不一致。现在只接受显式的 local / global。
+    const scope = input.scope;
+    if (scope !== "local" && scope !== "global")
+      throw new Error("scope 必须是 local 或 global");
     const userName = String(input.userName ?? input.name ?? "")
       .trim()
       .slice(0, 120);

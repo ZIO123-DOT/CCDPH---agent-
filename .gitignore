@@ -8,3 +8,9 @@ release/
 .desktop-data/
 .backup-*/
 .build-keep/
+# CCDPH-FIX(R2-P3-8): 此前没有任何一条覆盖 .env*。密钥扫描确认当前仓库没有 .env，
+# 但下次有人本地建 .env（比如放 ANTHROPIC_AUTH_TOKEN）就会出现在 git status 里，
+# 一次 `git add -A` 即造成凭据提交。
+.env
+.env.*
+!.env.example

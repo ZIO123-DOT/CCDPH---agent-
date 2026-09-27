@@ -579,7 +579,7 @@ function renderSidebar() {
     button.ondblclick = () => openRename(session);
     button.oncontextmenu = (event) => {
       event.preventDefault();
-      openSessionContextMenu(event.clientX, event.clientY, session);
+      openSessionContextMenu(event.clientX, event.clientY, session, button);
     };
     list.append(button);
   }
@@ -598,24 +598,35 @@ function renderSidebar() {
 }
 
 // ---- 会话右键菜单：重命名 / 置顶 / 归档 / 删除 ----
-function closeSessionContextMenu() {
-  $("#session-context-menu")?.classList.add("hidden");
+function closeSessionContextMenu(restoreFocus = false) {
+  const menu = $("#session-context-menu");
+  if (!menu || menu.classList.contains("hidden")) return;
+  menu.classList.add("hidden");
+  menu.replaceChildren();
+  if (restoreFocus) state.sessionMenuReturnFocus?.focus?.();
 }
-function openSessionContextMenu(x, y, session) {
+function openSessionContextMenu(x, y, session, trigger = null) {
   const menu = $("#session-context-menu");
   if (!menu) return;
+  // CCDPH-FIX(R2-P3-12): 关闭后把焦点还给触发它的会话项，键盘用户不会掉到 body。
+  state.sessionMenuReturnFocus = trigger || document.activeElement || null;
   menu.replaceChildren();
   const item = (label, handler, danger = false) => {
     const button = el("button", danger ? "danger" : "");
     button.type = "button";
     button.textContent = label;
-    button.onclick = () => {
-      closeSessionContextMenu();
-      handler();
-    };
+    // CCDPH-FIX(R2-P2-9): 原来这里直接 `handler()` 并丢弃返回的 Promise —— 请求失败时
+    //（服务重启 / 401 / 500）既无 toast 也无 catch，对「删除本地记录」这类不可逆操作
+    // 会看起来"什么都没发生"。统一走 action()（失败 toast），与同一菜单的「打开」一致。
+    // CCDPH-FIX(R2-P3-12): 补齐 role="menuitem"，读屏软件才能把子项识别成菜单项。
+    button.setAttribute("role", "menuitem");
+    button.onclick = action(async () => {
+      closeSessionContextMenu(true);
+      await handler();
+    });
     menu.append(button);
   };
-  item("打开", () => action(() => selectSession(session.id))());
+  item("打开", () => selectSession(session.id));
   item("重命名", () => openRename(session));
   item(session.pinned ? "取消置顶" : "置顶", () =>
     sessionQuickAction(session, { pinned: !session.pinned }),
@@ -628,6 +639,23 @@ function openSessionContextMenu(x, y, session) {
   const rect = menu.getBoundingClientRect();
   menu.style.left = `${Math.min(x, window.innerWidth - rect.width - 8)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - rect.height - 8)}px`;
+  // CCDPH-FIX(R2-P3-12): 菜单原来既没有 Esc 关闭，也没有焦点管理 —— 键盘/读屏用户
+  // 打开后只能靠鼠标点别处。打开即聚焦第一项，并提供 Esc / 方向键导航。
+  const items = [...menu.querySelectorAll("button")];
+  menu.onkeydown = (event) => {
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSessionContextMenu(true);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      items[(index + 1 + items.length) % items.length]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      items[(index - 1 + items.length) % items.length]?.focus();
+    }
+  };
+  items[0]?.focus();
 }
 async function sessionQuickAction(session, changes) {
   const updated = await api("session/update", {
@@ -667,9 +695,11 @@ async function deleteSessionById(session) {
   await refreshWorkspace();
   toast("已删除");
 }
-document.addEventListener("click", closeSessionContextMenu);
-document.addEventListener("blur", closeSessionContextMenu);
-window.addEventListener("resize", closeSessionContextMenu);
+// CCDPH-FIX(R2-P3-12): 这里必须显式包一层 —— 直接把 closeSessionContextMenu 当监听器
+// 会被传入事件对象，而它现在的首参是 restoreFocus（事件对象恒为真值 → 每次点击都会抢焦点）。
+document.addEventListener("click", () => closeSessionContextMenu());
+document.addEventListener("blur", () => closeSessionContextMenu());
+window.addEventListener("resize", () => closeSessionContextMenu());
 
 function renderHeader() {
   const project = activeProject(),
@@ -2226,8 +2256,25 @@ async function startTerminalOnce(force = false) {
       renderTerminal();
     };
     source.onerror = () => {
-      if (state.terminalSource === source) disconnectTerminalStream();
-      else source.close();
+      // CCDPH-FIX(R2-P2-7): 这里主动 close 掉 EventSource（= 放弃浏览器自动重连），但原来
+      // 只在 `state.terminalSource === source` 时调 disconnectTerminalStream()，而该函数
+      // 在 `if (!reset) return;` 处提前返回 —— terminalId / terminalExited 原样保留。
+      // 结果：xterm 面板继续显示"活的"提示符、设置区显示「运行中」，却**再也不会写入任何
+      // 输出**；按键被静默丢弃（term.onData 的请求错误被 .catch(()=>{}) 吞掉），重新选中
+      // 终端页签也不会重启（setPanel 仅在 !terminalId || terminalExited 时才启动）。
+      // 会话流有 reconcileSessionState() + toast 兜底，终端流此前完全没有。
+      if (state.terminalSource !== source) {
+        source.close();
+        return;
+      }
+      disconnectTerminalStream();
+      state.terminalExited = true;
+      const notice = "\r\n[终端连接已中断，点击「终端」页签可重新连接]\r\n";
+      state.terminalChunk = (state.terminalChunk || "") + notice;
+      appendTerminalOutput(notice);
+      renderTerminal();
+      renderSettingsDiagnostics();
+      toast("终端连接已中断，点击「终端」页签可重新连接");
     };
   }
   renderTerminal();
@@ -3347,8 +3394,10 @@ $("#mcp-save").onclick = action(async () => {
     url: $("#mcp-url").value.trim(),
   };
   if (Object.keys(env).length) payload.env = env;
-  await api("mcp-servers/save", payload);
-  toast(`MCP「${name}」已保存，下一轮对话生效`);
+  const saved = await api("mcp-servers/save", payload);
+  // CCDPH-FIX(R2-P3-7): env 里的凭据类变量是**明文**写进 MCP 配置文件的，后端会带出
+  // warning —— 必须让用户看到，不能只提示"已保存"。
+  toast(saved?.warning || `MCP「${name}」已保存，下一轮对话生效`);
   closeMcpEditor();
   await renderMcpServers();
   await refreshIntegrations();
@@ -3412,7 +3461,13 @@ async function renderGitConfig() {
   let data;
   try {
     data = await api("git-config?" + workspaceQuery());
-  } catch {
+  } catch (error) {
+    // CCDPH-FIX(R2-P2-10): 原来这里静默 return —— git 未安装 / PATH 异常 / 权限故障
+    // 时界面毫无反馈，用户会以为"本来就没配置"。现在如实展示错误。
+    const list = $("#git-remote-list");
+    list.replaceChildren(
+      el("div", "muted", `读取 Git 配置失败：${error.message}`),
+    );
     return;
   }
   renderGitOverview(data);

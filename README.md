@@ -94,15 +94,21 @@ npm install --cache .npm-cache --registry https://registry.npmjs.org --omit=opti
 
 - `npm start`：即 `node server.mjs`，启动浏览器开发服务（默认 `127.0.0.1:4318`，可用 `WORKBENCH_PORT` 换端口）。本次启动的入口 URL 与令牌只打印在该进程终端，不写入磁盘。
 - `npm test`：即 `node tests/run.mjs`，运行离线测试：启动冒烟（鉴权与 `runtime.json` 不含令牌）、`state.json` 损坏兜底、NTFS ADS 拦截、更新任务后台化回归。全程使用临时数据目录与随机端口，不触碰部署目录的 `.data`。
-- `npm run check`：即 `node tests/syntax-check.mjs`，对全部源码文件（`server.mjs`、`desktop.cjs`、`preload.cjs`、`browser/*.mjs`、`public/app.js`、`tests/*.mjs`）逐个做 `node --check` 语法检查。
-- `npm run integrity`：重新生成 `runtime-integrity.json`。只应在代码冻结后运行，并在同步到运行版后复算全部条目。
+- `npm run check`：即 `node tests/syntax-check.mjs`，对全部源码文件逐个做 `node --check` 语法检查。清单 = 显式列出的应用文件（`server.mjs`、`desktop.cjs`、`preload.cjs`、`routes/*.mjs`、`public/*.js`、`scripts/*.mjs`）+ **自动扫描**的 `tests/*.mjs` 与 `browser/*.mjs`。
+- `npm run integrity`：重新生成 `runtime-integrity.json`。只应在代码冻结后运行，并在同步到运行版后复算全部条目。清单内容 = 应用文件 + 关键第三方依赖 + **扫描 `sdk.mjs` 运行期 `require()` 得到的所有依赖文件**（如 `ajv`/`ajv-formats` 的运行时模块）。
 
 仓库没有桌面打包脚本：桌面入口是 `desktop.cjs`（需自行以 Electron 运行），当前桌面运行版位于 `D:\CCDPH`，应用代码为 `D:\CCDPH\resources\app`。便携 exe 由仓库外的打包器生成，不存在 `npm run desktop` 或 `npm run build:desktop` 命令。依赖版本由 `package-lock.json` 锁定。
 
-> **随附的运行时**：当前运行版内含 **Electron 44.3.0**（见 `D:\CCDPH\version`）。Electron 不在 `package.json` 的 `dependencies` 里，**`npm audit` 不会覆盖它及其内置 Chromium / Node / V8 的 CVE**；每次发版应记录所用 Electron 版本，并单独跟进其安全公告。
+> **随附的运行时**：当前运行版内含 **Electron 44.3.0**（见 `D:\CCDPH\version`）。Electron 不在 `package.json` 的 `dependencies` 里，**`npm audit` 不会覆盖它及其内置 Chromium / Node / V8 的 CVE**；每次发版应记录所用 Electron 版本，并单独跟进其安全公告。门禁的 G6 规则每次都会把这条覆盖盲区打印出来（`覆盖盲区：Electron/Chromium 运行时不在 npm 依赖树内，CVE 扫描不覆盖`）。
+>
+> **完整性清单的边界**：`runtime-integrity.json` 的用途是 **corruption-detection**（检测文件损坏或被静默替换）。它不是能抵挡"对安装目录有写权限的进程"的安全边界 —— 对方可以直接重跑 `npm run integrity` 生成一份自洽的清单。若安装目录对普通用户可写，请改到受保护的位置部署。验签用的 PowerShell 解释器覆盖（`CCDPH_SIGNATURE_POWERSHELL`）现在必须与 `CCDPH_ALLOW_SIGNATURE_OVERRIDE=1` 同时设置才生效（仅打包冒烟用例使用）。
 
 ## 开发
 
-`test/v2-ui.cjs` 是开发服务离线 UI 测试，`test/ui-fixes.cjs` 覆盖 12 分类设置中心、搜索、外观、缩放和导航，`test/packaged-ui-v2.cjs` 是打包 exe 离线 UI 测试，均依赖 Edge；`test/real-smoke-v2.cjs` 会发送真实模型请求并产生用量。旧版 `test/smoke.cjs` 和 `test/approval-smoke.cjs` 也保留作手动端到端测试。上述浏览器测试不属于 `npm test`（`tests/run.mjs`）的离线测试。
+离线测试全部位于 `tests/`，由 `tests/run.mjs`（`npm test`）统一驱动：`behavior.mjs`（状态机/策略单测）、`route-domains.mjs`、`state-fold-backup.mjs`、`api-tests.mjs`（HTTP 接口与生命周期）、`sse-limits.mjs`、`browser-*.mjs`、`terminal-registry-*.mjs`、`terminal-recovery.mjs`、`credential-*.mjs`、`worktree-*.mjs`、`resource-limits.mjs`、`renderer-*.mjs`、`mcp-save-name.mjs`、`frontend-export-coverage.mjs`。除 `packaged-signature-fallback.mjs`（需 `CCDPH_PACKAGED_EXE`，未设置时自我跳过）外，全部使用临时数据目录与随机端口，**不触碰部署目录的 `.data` / `.desktop-data`**。
+
+发版门禁是 `node tests/gate.mjs`（8 条规则：回归完整性、通过率、P0/P1 失败数、语法、`npm audit`、接口用例、**安全用例无盲区**）。安全用例（终端恢复、打包签名降级）若自我跳过，默认会让门禁 **NO-GO**；确需在无打包 exe / 离线环境下放行，必须显式加 `--allow-blind-spots`（盲区仍会打印在报告与 `--json` 输出里）。
+
+`node tests/gate.mjs --inject=G2` 可注入指定规则失败，用于自检门禁确实能拦截。
 
 接入依据：[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview)、[权限处理](https://code.claude.com/docs/en/agent-sdk/permissions)。
