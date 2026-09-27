@@ -15,6 +15,7 @@ const {
 const path = require("node:path");
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
+const { createHash, timingSafeEqual } = require("node:crypto");
 const ICON_DIR = path.join(__dirname, "build");
 let window,
   engine,
@@ -66,6 +67,33 @@ function trustedSender(event) {
 const portableRoot = app.isPackaged
   ? path.dirname(process.execPath)
   : __dirname;
+async function verifyPackagedRuntime() {
+  if (!app.isPackaged) return true;
+  const manifestFile = path.join(__dirname, "runtime-integrity.json");
+  try {
+    const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+    if (!Array.isArray(manifest.files) || !manifest.files.length)
+      throw new Error("完整性清单为空");
+    for (const item of manifest.files) {
+      const relative = String(item?.path || "").replace(/\\/g, "/");
+      if (!relative || relative.startsWith("/") || relative.split("/").includes(".."))
+        throw new Error("完整性清单包含非法路径");
+      const expectedHex = String(item?.sha256 || "");
+      if (!/^[0-9a-f]{64}$/i.test(expectedHex))
+        throw new Error(`完整性清单哈希无效：${relative}`);
+      const actual = createHash("sha256")
+        .update(await fs.readFile(path.join(__dirname, relative)))
+        .digest();
+      const expected = Buffer.from(expectedHex, "hex");
+      if (!timingSafeEqual(actual, expected))
+        throw new Error(`运行时文件校验失败：${relative}`);
+    }
+    return true;
+  } catch (error) {
+    console.error("[ccdph] 运行时完整性校验失败:", error?.message || error);
+    return false;
+  }
+}
 app.setPath("userData", path.join(portableRoot, ".desktop-data"));
 process.env.WORKBENCH_DATA_DIR = path.join(portableRoot, ".data");
 // 让本地服务知道自己在桌面版里运行（自动更新等能力依赖此标记）
@@ -96,6 +124,11 @@ else {
   app
     .whenReady()
     .then(async () => {
+      if (!(await verifyPackagedRuntime())) {
+        dialog.showErrorBox("CCDPH 启动被阻止", "运行时文件完整性校验失败，程序文件可能已损坏或被篡改。\n请重新部署最新版本。");
+        app.quit();
+        return;
+      }
       // 桌面快捷方式自维护：每次启动用 Electron 原生接口确保桌面有正确的 CCDPH.lnk
       // （target 指向本 exe、图标用 ccdph.ico；手写/第三方创建的坏快捷方式会被自动修正）
       try {
