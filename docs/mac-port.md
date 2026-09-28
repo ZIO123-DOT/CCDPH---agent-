@@ -31,27 +31,25 @@
 - **mac 障碍**：Electron `safeStorage`（Keychain 后端）**只能在 Electron 主进程内调用**，无法在纯 Node 子进程用。
 - **mac 实现**：新增 `createMacKeychainProtector()`，在 Electron 主进程内 `require("electron").safeStorage`（Keychain）做加解密，`name: "macos-keychain"`，密文仍存 `api-auth.json`（version 2 格式）；纯 Node（`npm start`）下 `require("electron")` 失败 → 返回 `null` 会话级降级。单测见 `tests/behavior.mjs`（注入假 safeStorage 验证往返）。**待真实 Mac 上验证 Keychain 加解密**。
 
-### 3. 终端进程恢复（`terminal-registry.mjs`）
+### 3. 终端进程恢复（`terminal-registry.mjs`）—— ✅ 已实现（2026-09-28）
 - **Windows 现状**：Toolhelp32 快照 + `taskkill.exe /T /F`（进程树强杀），PID 复用前重新核验进程名/启动时间。
-- **mac 方案**：`ps -axo pid=,ppid=,lstart=,comm=` 快照 + `kill -9`（或进程组 `kill -- -<pgid>`，需子进程 `detached` + `setsid`）。
-- **现有**：`terminalRegistryPlatformStatus()` 已对非 win32 返回「不支持」，即 mac 上此功能目前整体禁用；移植 = 新增 darwin 实现。
+- **mac 实现**：新增 `unixProcessTable()`（`ps -axo pid=,ppid=,lstart=,comm=` 枚举 + 父子树遍历）与 `killTerminalProcess()`（`SIGKILL`，ESRCH 视为成功）；`writeSnapshot`/`sweep`/`scheduleAfter` 放开 darwin，`terminalRegistryPlatformStatus()` 标记 darwin 支持。名称+启动时间复核逻辑两平台共用，防 PID 复用误杀。**待真实 Mac 验证 `ps` 解析**。
 
-### 4. 浏览器自动化（`browser/detect.mjs`、`browser/service.mjs`）
+### 4. 浏览器自动化（`browser/detect.mjs`、`browser/service.mjs`）—— ✅ 已实现（2026-09-28）
 - **Windows 现状**：硬编码 `C:\Program Files\…\msedge.exe` / `chrome.exe`，读 `DevToolsActivePort`，`taskkill /T` 收进程树，`--remote-debugging-port` + 专用 Profile。
-- **mac 方案**：
-  - Edge：`/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge`
-  - Chrome：`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`
-  - `DevToolsActivePort` 在 `~/Library/Application Support/Microsoft Edge/DevToolsActivePort`（attach 模式）
-  - 进程树：`kill` 进程组（`spawn(..., { detached: true })` + `process.kill(-pid, "SIGKILL")`）
-- **注意**：Chromium CDP 在 mac 上行为一致（`--remote-debugging-port` / `--remote-allow-origins` 同款），Playwright MCP 无需改。
+- **mac 实现**：
+  - 路径：`/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge` / Google Chrome 对应路径（`detect.mjs` 已加）
+  - `DevToolsActivePort` 在 `~/Library/Application Support/Microsoft Edge/DevToolsActivePort`（`detect.mjs` 已加）
+  - 进程树：`launchDedicatedEdge` 非 win32 加 `detached`（进程组组长），`killProcessTree` 非 win32 用 `kill(-pid, "SIGKILL")`
+- **注意**：Chromium CDP 在 mac 上行为一致，Playwright MCP 无需改。**待真实 Mac 验证进程组 kill**。
 
-### 5. 自动更新（`server.mjs` 约 1650–1760）
+### 5. 自动更新（`server.mjs`）—— ✅ 已实现（2026-09-28）
 - **Windows 现状**：`powershell.exe -Command Expand-Archive`、`taskkill` + `.bat` 自替换重启动脚本（纯 ASCII）、`%SystemRoot%\System32`。
-- **mac 方案**：`ditto -x -k`（解 zip 保留权限/符号链接）或 `unzip`；自替换用 shell 脚本（`/bin/sh`）；`kill $PID` + `open` 重启动。
+- **mac 实现**：解压用 `ditto -x -k`（保留 .app 内符号链接/权限）；安装目录上溯到 .app 父目录；应用入口改为找 `CCDPH.app`（目录）；自替换用 `/bin/sh` 脚本（`kill` → `ditto` 替换 .app → `open` 重启动 → 回收暂存），路径经环境变量传入。**待真实 Mac 验证 ditto/.app 替换**。
 
-### 6. 桌面主进程（`desktop.cjs`）
-- **Windows 现状**：`powershell.exe`、`node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe`、`process.platform !== "win32"` 早退（约 150 行）。
-- **mac 方案**：SDK 原生二进制改为 `claude-agent-sdk-darwin-arm64` / `-x64`（若上游提供）；`app.getPath()` 等 Electron API 已跨平台。
+### 6. 桌面主进程（`desktop.cjs`）—— ✅ 已实现（2026-09-28）
+- **Windows 现状**：`powershell.exe`、`node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe`、`process.platform !== "win32"` 早退。
+- **mac 实现**：SDK 平台二进制按 `process.platform`/`process.arch` 选择（`claude-agent-sdk-darwin-{arm64,x64}` + 裸 `claude`），`REQUIRED_RUNTIME_FILES` 与验签共用该映射。验签仍仅 win32（Authenticode 是 Windows 专属）。
 
 ### 7. 路径处理（`routes/workspace-io.mjs` 等）
 - 用 `path` 模块处基本跨平台；需逐处核对 `path.win32`、盘符假设、`C:\` 字符串比较（`server.mjs` 的 `.cmd` 白名单里 `/^[a-zA-Z]:\\/` 等）。多为「加 darwin 分支」的机械改动。
@@ -61,9 +59,9 @@
 
 ## 建议拆分（按风险从低到高）
 
-- **P0（机械分支）**：`findClaude`/`claudeVersionOf`/`resolveNativeClaudeExecutable` darwin 分支；浏览器路径；路径处理核对。可离线改，风险最低。
-- **P1（需 mac 验证）**：凭据 `safeStorage` 迁移（方案 A）；终端恢复 darwin 实现；自动更新 `ditto`/`sh`；桌面主进程 SDK darwin。
-- **P2（只能在 mac 上收尾）**：真实浏览器启动/进程树验证；打包 + 签名 + 公证；SDK darwin 二进制可用性确认。
+- **P0（机械分支）—— ✅ 已完成**：`findClaude`/`claudeVersionOf` darwin 分支；浏览器路径；`resolveNativeClaudeExecutable`（mac 上是 no-op，已确认）。
+- **P1（需 mac 验证）—— ✅ 已完成（待 Mac 验证）**：凭据 `safeStorage`（Keychain）；终端恢复 `ps`+`kill`；浏览器进程树 kill + detached；自动更新 `ditto`/`sh`；桌面主进程 SDK darwin 映射。
+- **P2（只能在 mac 上收尾）**：真实浏览器启动/进程树验证；终端 `ps` 解析验证；ditto/.app 替换验证；打包 + 签名 + 公证。
 
-## 前置未知项
-- `@anthropic-ai/claude-agent-sdk` 是否发布 `darwin-arm64`/`darwin-x64` 原生二进制（否则 Claude Code 执行链路需走 npm 全局 `claude`，见第 1 项）。
+## 前置未知项（已确认）
+- `@anthropic-ai/claude-agent-sdk` 已发布 `darwin-x64`/`darwin-arm64` 原生二进制（见 `package.json` optionalDependencies，v0.3.268），无需走 npm 全局 `claude`。

@@ -1598,12 +1598,26 @@ async function assertExtractedSizeWithin(dir, limit = MAX_EXTRACTED_BYTES) {
 async function installUpdate(onStage = () => { }) {
   if (process.env.WORKBENCH_DESKTOP !== "1")
     throw new Error("自动安装仅支持桌面版；网页版请手动下载新版本");
-  // 打包版：进程 exe 就是 "CCDPH.exe"，它所在的目录即安装目录；
-  // 该目录里的 .data / .desktop-data 不会被 robocopy /E 覆盖删除
+  // 打包版：进程可执行文件名因平台而异（Windows 是 CCDPH.exe，macOS 是 .app 内的 CCDPH）；
+  // 它所在的目录即安装目录，该目录里的 .data / .desktop-data 不会被替换步骤覆盖删除。
   const execName = path.basename(process.execPath).toLowerCase();
-  if (execName !== "ccdph.exe")
+  const expectedExec = process.platform === "win32" ? "ccdph.exe" : "ccdph";
+  if (execName !== expectedExec)
     throw new Error("当前是开发模式运行，自动更新已跳过（请使用打包版）");
-  const installDir = path.dirname(process.execPath);
+  // 安装目录：Windows 是 CCDPH.exe 所在目录；macOS 的 execPath 位于 CCDPH.app/Contents/MacOS/
+  // 内，需上溯到 .app 的父目录（替换/重启动的是整个 .app 包）。
+  const installDir =
+    process.platform === "win32"
+      ? path.dirname(process.execPath)
+      : (() => {
+          let dir = path.dirname(process.execPath);
+          while (dir && dir !== path.dirname(dir)) {
+            if (path.basename(dir).toLowerCase().endsWith(".app"))
+              return path.dirname(dir);
+            dir = path.dirname(dir);
+          }
+          return path.dirname(process.execPath);
+        })();
   const check = await checkForUpdate();
   if (!check.updateAvailable || !check.url)
     throw new Error(
@@ -1671,119 +1685,157 @@ async function installUpdate(onStage = () => { }) {
     // 中央目录验证完成后再从磁盘重算一次，关闭“下载校验通过后替换 update.zip”窗口。
     if (!equalSha256Hex(check.sha256, await sha256File(zipPath, MAX_UPDATE_BYTES)))
       throw new Error("更新包在解压前发生变化，已拒绝安装");
-    // CCDPH-FIX(LOW-1): 与下面 .bat 路径同一条字符闸门。PowerShell 的双引号字符串里
-    // `$` 与反引号**仍然会被求值**（`$(…)` 会执行子表达式），而 zipPath/extractDir 派生自
-    // %TEMP%（用户可控）。原来的闸门只覆盖 .bat 正文、且在这条命令之后才跑，等于
-    // PowerShell 这条路径完全没设防；现在先把危险字符挡掉，再拼 -Command 字符串。
-    for (const [label, value] of [
-      ["更新包", zipPath],
-      ["解包目录", extractDir],
-    ]) {
-      if (/["$`\r\n]/.test(value))
-        throw new Error(
-          `${label}路径包含 PowerShell 无法安全处理的字符（引号、$ 或反引号），已中止自动更新`,
-        );
+    // CCDPH-FIX(LOW-1): PowerShell 的双引号字符串里 `$` 与反引号**仍会被求值**（`$(…)` 会
+    // 执行子表达式），而 zipPath/extractDir 派生自 %TEMP%（用户可控）。这条字符闸门只对
+    // Windows 的 PowerShell 路径有意义；macOS 用 ditto（argv 数组、无 shell），路径不经过
+    // 字符串拼接，不存在同类注入。
+    if (process.platform === "win32") {
+      for (const [label, value] of [
+        ["更新包", zipPath],
+        ["解包目录", extractDir],
+      ]) {
+        if (/["$`\r\n]/.test(value))
+          throw new Error(
+            `${label}路径包含 PowerShell 无法安全处理的字符（引号、$ 或反引号），已中止自动更新`,
+          );
+      }
+      await exec(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-Command",
+          `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${extractDir}" -Force`,
+        ],
+        { windowsHide: true, timeout: 300000 },
+      );
+    } else {
+      // macOS：ditto -x -k 解压（保留 .app 内符号链接与权限；unzip 会破坏它们）
+      await exec("ditto", ["-x", "-k", zipPath, extractDir], {
+        timeout: 300000,
+      });
     }
-    await exec(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Command",
-        `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${extractDir}" -Force`,
-      ],
-      { windowsHide: true, timeout: 300000 },
-    );
     // PowerShell 解压期间若包被并发改写，结果不可再信任；只清理随机暂存目录，不进入替换阶段。
     if (!equalSha256Hex(check.sha256, await sha256File(zipPath, MAX_UPDATE_BYTES)))
       throw new Error("更新包在解压期间发生变化，已拒绝安装");
     // CCDPH-FIX(R2-P3-3): 声明值可伪造，必须按解压后的**真实**体积复核 1 GiB 上限。
     await assertExtractedSizeWithin(extractDir);
-    // 安装包根目录或一级子目录里找 "CCDPH.exe"
-    const exeName = "CCDPH.exe";
+    // 安装包根目录或一级子目录里找应用：Windows 是 CCDPH.exe（文件），macOS 是 CCDPH.app（目录）。
+    const isWin = process.platform === "win32";
+    const appName = isWin ? "CCDPH.exe" : "CCDPH.app";
     let appDir = "";
     const entries = await fs.readdir(extractDir, { withFileTypes: true });
-    // CCDPH-FIX(P3-21): 原来只比 `entry.name === "CCDPH.exe"`（大小写敏感、且不校验是否为文件）。
-    // 不同机器/打包器可能产出小写名，或同名项其实是目录 → "找不到应用目录"。
-    const isExe = (entry) =>
-      entry.isFile() && entry.name.toLowerCase() === exeName.toLowerCase();
-    if (entries.some(isExe)) appDir = extractDir;
+    // CCDPH-FIX(P3-21): 原来只比 `entry.name === "CCDPH.exe"`（大小写敏感、且不校验类型）。
+    // 不同机器/打包器可能产出小写名，或同名项其实是另一种类型 → "找不到应用目录"。
+    const isApp = (entry) =>
+      (isWin ? entry.isFile() : entry.isDirectory()) &&
+      entry.name.toLowerCase() === appName.toLowerCase();
+    if (entries.some(isApp)) appDir = extractDir;
     else {
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const child = path.join(extractDir, entry.name);
         const childEntries = await fs.readdir(child, { withFileTypes: true });
-        if (childEntries.some(isExe)) {
+        if (childEntries.some(isApp)) {
           appDir = child;
           break;
         }
       }
     }
-    if (!appDir) throw new Error("安装包里没有找到 CCDPH.exe");
+    if (!appDir) throw new Error(`安装包里没有找到 ${appName}`);
     onStage("替换");
-    const batPath = path.join(stageDir, "apply-update.bat");
-    // robocopy 退出码 0-7 都算成功，>= 8 才是失败；失败时绝不能启动。
-    // 可能新旧混合的安装目录。
-    // CCDPH-FIX(F-12/ELE-3): 脚本正文必须是**纯 ASCII**。cmd.exe 是按字节、用控制台
-    // OEM 代码页（CP936/CP932/…）读 .bat 的，它不会按 UTF-8 解码；而 %TEMP% 和安装目录
-    // 都可能含中文（本应用的目标用户尤其如此），UTF-8 字节会被解成乱码 → robocopy 拿到
-    // 不存在的源、以 errorlevel>=8 退出 → 更新静默不生效。
-    // 因此路径全部改由**环境变量**传入：CreateProcess 传的是宽字符，cmd 在运行时展开，
-    // 既不经过 OEM 解码，也不再出现「路径里的 %VAR% 被二次展开」（ELE-3）。
-    // 这里额外做一次字符闸门：引号会破坏引号配对，换行会切断命令。
-    for (const [label, value] of [
-      ["更新源", appDir],
-      ["安装目录", installDir],
-      ["暂存目录", stageDir],
-    ]) {
-      if (/["\r\n]/.test(value))
-        throw new Error(`${label}路径包含 cmd 无法处理的字符（引号或换行），已中止自动更新`);
+    // 替换 + 自重启：Windows 用 .bat + robocopy；macOS 用 .sh + ditto。路径一律经环境变量传入，
+    // 脚本正文保持纯 ASCII（Windows 的 cmd 按 OEM 代码页读 .bat，中文路径会乱码）。
+    if (process.platform === "win32") {
+      const batPath = path.join(stageDir, "apply-update.bat");
+      // robocopy 退出码 0-7 都算成功，>= 8 才是失败；失败时绝不能启动（可能新旧混合的安装目录）。
+      // CCDPH-FIX(F-12/ELE-3): 脚本正文必须纯 ASCII —— cmd.exe 按字节、用控制台 OEM 代码页读
+      // .bat，不会按 UTF-8 解码；路径全部改由环境变量传入（CreateProcess 传宽字符，运行时展开）。
+      // 这里额外做字符闸门：引号会破坏引号配对，换行会切断命令。
+      for (const [label, value] of [
+        ["更新源", appDir],
+        ["安装目录", installDir],
+        ["暂存目录", stageDir],
+      ]) {
+        if (/["\r\n]/.test(value))
+          throw new Error(`${label}路径包含 cmd 无法处理的字符（引号或换行），已中止自动更新`);
+      }
+      const bat = [
+        "@echo off",
+        '"%SystemRoot%\\System32\\chcp.com" 65001 >nul',
+        '"%SystemRoot%\\System32\\timeout.exe" /t 3 /nobreak >nul',
+        `"%SystemRoot%\\System32\\taskkill.exe" /pid ${process.pid} /f >nul 2>&1`,
+        '"%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >nul',
+        '"%SystemRoot%\\System32\\robocopy.exe" "%CCDPH_SRC%" "%CCDPH_DST%" /E /NFL /NDL /NJH /NJS /NP',
+        "rem robocopy exit code >= 8 means the copy failed",
+        "if errorlevel 8 (",
+        '  cd /d "%TEMP%" & rmdir /s /q "%CCDPH_STAGE%"',
+        "  rem CCDPH-FIX(P2-9): the app was already taskkilled above; relaunch it so a failed",
+        "  rem copy does not leave the user with neither an updated nor a running app.",
+        '  start "" "%CCDPH_EXE%"',
+        "  exit /b 1",
+        ")",
+        'start "" "%CCDPH_EXE%"',
+        "rem final step: reclaim the whole staging folder (update.zip included)",
+        'cd /d "%TEMP%" & rmdir /s /q "%CCDPH_STAGE%"',
+        "",
+      ].join("\r\n");
+      await fs.writeFile(batPath, bat, "utf8");
+      // CCDPH-FIX(P1-2): 原来直接 `spawn(...).unref()` 且没有 error 监听 —— cmd.exe 启动失败
+      // 会抛未处理的 'error' 事件触发全局兜底把应用退出。改为等 'spawn' 确认启动成功后再 unref。
+      await new Promise((resolve, reject) => {
+        const updater = spawn(WINDOWS_CMD_EXE, ["/c", batPath], {
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+          env: {
+            ...process.env,
+            CCDPH_SRC: appDir,
+            CCDPH_DST: installDir,
+            CCDPH_STAGE: stageDir,
+            CCDPH_EXE: path.join(installDir, appName),
+          },
+        });
+        updater.once("spawn", () => {
+          updater.unref();
+          resolve();
+        });
+        updater.once("error", (error) => reject(error));
+      });
+    } else {
+      // macOS：ditto 替换 .app（保留符号链接与权限）+ open 重启动；路径经环境变量传入，脚本正文纯 ASCII。
+      const shPath = path.join(stageDir, "apply-update.sh");
+      const srcApp = path.join(appDir, appName);
+      const dstApp = path.join(installDir, appName);
+      const sh = [
+        "#!/bin/sh",
+        "sleep 3",
+        `kill -9 ${process.pid} 2>/dev/null || true`,
+        "sleep 1",
+        'rm -rf "$CCDPH_DST_APP"',
+        'ditto "$CCDPH_SRC_APP" "$CCDPH_DST_APP"',
+        'open "$CCDPH_DST_APP"',
+        'rm -rf "$CCDPH_STAGE"',
+        "",
+      ].join("\n");
+      await fs.writeFile(shPath, sh, "utf8");
+      await new Promise((resolve, reject) => {
+        const updater = spawn("/bin/sh", [shPath], {
+          detached: true,
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            CCDPH_SRC_APP: srcApp,
+            CCDPH_DST_APP: dstApp,
+            CCDPH_STAGE: stageDir,
+          },
+        });
+        updater.once("spawn", () => {
+          updater.unref();
+          resolve();
+        });
+        updater.once("error", (error) => reject(error));
+      });
     }
-    // 注意：下面这个数组是**生成到磁盘上的 .bat 正文**，必须保持纯 ASCII ——
-    // 中文说明只能写在这里（JS 源文件按 UTF-8 读，.bat 不是）。
-    const bat = [
-      "@echo off",
-      '"%SystemRoot%\\System32\\chcp.com" 65001 >nul',
-      '"%SystemRoot%\\System32\\timeout.exe" /t 3 /nobreak >nul',
-      `"%SystemRoot%\\System32\\taskkill.exe" /pid ${process.pid} /f >nul 2>&1`,
-      '"%SystemRoot%\\System32\\timeout.exe" /t 1 /nobreak >nul',
-      '"%SystemRoot%\\System32\\robocopy.exe" "%CCDPH_SRC%" "%CCDPH_DST%" /E /NFL /NDL /NJH /NJS /NP',
-      "rem robocopy exit code >= 8 means the copy failed",
-      "if errorlevel 8 (",
-      '  cd /d "%TEMP%" & rmdir /s /q "%CCDPH_STAGE%"',
-      "  rem CCDPH-FIX(P2-9): the app was already taskkilled above; relaunch it so a failed",
-      "  rem copy does not leave the user with neither an updated nor a running app.",
-      '  start "" "%CCDPH_EXE%"',
-      "  exit /b 1",
-      ")",
-      'start "" "%CCDPH_EXE%"',
-      "rem final step: reclaim the whole staging folder (update.zip included)",
-      'cd /d "%TEMP%" & rmdir /s /q "%CCDPH_STAGE%"',
-      "",
-    ].join("\r\n");
-    await fs.writeFile(batPath, bat, "utf8");
-    // CCDPH-FIX(P1-2): 原来直接 `spawn(...).unref()` 且**没有 error 监听** —— cmd.exe 启动失败
-    // （被杀软拦截 / EACCES / 磁盘异常）会抛出未处理的 'error' 事件，触发 desktop.cjs 的全局
-    // uncaughtException 兜底，把整个应用退出。这里改为等 'spawn' 确认启动成功后再 unref；
-    // 失败则 reject，交由外层 catch 回收暂存目录并如实回 400（不再"失败伪装成功"）。
-    await new Promise((resolve, reject) => {
-      const updater = spawn(WINDOWS_CMD_EXE, ["/c", batPath], {
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-        env: {
-          ...process.env,
-          CCDPH_SRC: appDir,
-          CCDPH_DST: installDir,
-          CCDPH_STAGE: stageDir,
-          CCDPH_EXE: path.join(installDir, exeName),
-        },
-      });
-      updater.once("spawn", () => {
-        updater.unref();
-        resolve();
-      });
-      updater.once("error", (error) => reject(error));
-    });
     return { ok: true, version: check.latest };
   } catch (error) {
     // CCDPH-FIX(F-07): 失败必须回收暂存目录（含已下载的 update.zip）
