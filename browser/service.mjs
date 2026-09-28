@@ -47,7 +47,13 @@ const SCREENSHOT_TOTAL_MAX_BYTES = 256 * 1024 * 1024;
 function isPortFree(port) {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once("error", () => resolve(false));
+    // CCDPH-FIX(R7-P3-2): error 分支同样显式关闭 server（防御性，避免未 listen 的句柄残留）。
+    server.once("error", () => {
+      try {
+        server.close();
+      } catch { }
+      resolve(false);
+    });
     server.listen(port, "127.0.0.1", () => {
       server.close(() => resolve(true));
     });
@@ -62,6 +68,9 @@ export async function findFreeDedicatedPort(attempts = 20) {
 }
 
 let _cachedCdpPort = { port: 0, mtime: 0 };
+// CCDPH-FIX(R7-P3-2): 专用模式回读实际端口的缓存（mtime+size + profileDir 键），与 attach
+// 分支的 _cachedCdpPort 同口径，避免每次 status 轮询都 readFile。
+let _cachedDedicatedPort = { profileDir: "", port: 0, mtime: 0, size: 0 };
 export async function cdpEndpointFromSettings(browserSettings) {
   if (!browserSettings || !browserSettings.enabled) return "";
   if ((browserSettings.mode || "attach") === "attach") {
@@ -97,13 +106,42 @@ export async function cdpEndpointFromSettings(browserSettings) {
   // 端口被占用导致 Edge 改绑，这里以**实际端口**为准，避免 persisted / CDP / MCP 三者失配。
   const profileDir =
     browserSettings.profileDir || path.join(DATA_DIR, "browser-profile");
-  try {
-    const activeFile = path.join(profileDir, "DevToolsActivePort");
-    const text = await fs.promises.readFile(activeFile, "utf8");
-    const actual = Number.parseInt(text.trim().split(/\r?\n/)[0], 10);
-    if (Number.isInteger(actual) && actual > 0)
-      return `http://127.0.0.1:${actual}`;
-  } catch { }
+  // CCDPH-FIX(R7-P3-1): 读前对 profileDir 做包含性校验（与 resolveDedicatedProfileDir 同口径）。
+  // profileDir 来自 state.json（本地可写），仅 trim+slice 无包含性校验；篡改它指向 DATA_DIR 之外、
+  // 借一个恶意 DevToolsActivePort，就能让 connectOverCDP 连到任意本机端口。越界则跳过回读。
+  const dataRoot = path.resolve(DATA_DIR);
+  const resolvedProfile = path.resolve(profileDir);
+  const relProfile = path.relative(dataRoot, resolvedProfile);
+  const profileInside =
+    Boolean(relProfile) &&
+    relProfile !== ".." &&
+    !relProfile.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relProfile);
+  if (profileInside) {
+    try {
+      const activeFile = path.join(resolvedProfile, "DevToolsActivePort");
+      // CCDPH-FIX(R7-P3-2): mtime+size+profileDir 缓存，文件未变时直接用缓存端口。
+      const st = await fs.promises.stat(activeFile);
+      if (
+        _cachedDedicatedPort.profileDir === resolvedProfile &&
+        st.mtimeMs === _cachedDedicatedPort.mtime &&
+        st.size === _cachedDedicatedPort.size &&
+        _cachedDedicatedPort.port > 0
+      )
+        return `http://127.0.0.1:${_cachedDedicatedPort.port}`;
+      const text = await fs.promises.readFile(activeFile, "utf8");
+      const actual = Number.parseInt(text.trim().split(/\r?\n/)[0], 10);
+      if (Number.isInteger(actual) && actual > 0) {
+        _cachedDedicatedPort = {
+          profileDir: resolvedProfile,
+          port: actual,
+          mtime: st.mtimeMs,
+          size: st.size,
+        };
+        return `http://127.0.0.1:${actual}`;
+      }
+    } catch { }
+  }
   // CCDPH-FIX(R5-P2-4): 端口未配置（0）时 fail-closed 返回空，不再回退到可预测的 9223。
   const port = Number(browserSettings.dedicatedPort) || 0;
   return port ? `http://127.0.0.1:${port}` : "";

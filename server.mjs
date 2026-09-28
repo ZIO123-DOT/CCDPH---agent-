@@ -153,6 +153,9 @@ const DEFAULT_SETTINGS = {
     allowOrigins: [],
     blockOrigins: [],
     imageResponses: "omit",
+    // CCDPH-FIX(R7-P2-1): 旧默认 9223 的一次性迁移标记。为 true 表示「已迁过一次」，此后
+    // 用户显式设置的 9223 不再被再次迁移（否则显式 9223 会在每次重启被静默回退）。
+    dedicatedPortMigrated: false,
   },
 };
 // CCDPH-FIX(A10-17): 深度上限改为「相对」语义 —— 只约束**单条事件 / 单条消息内容自身**的
@@ -4430,10 +4433,14 @@ function normalizeLoadedSettings(settings) {
     const raw = settings.browser;
     if (typeof raw.enabled === "boolean") browser.enabled = raw.enabled;
     if (["attach", "dedicated"].includes(raw.mode)) browser.mode = raw.mode;
-    // CCDPH-FIX(R6-P2-1): 旧版本默认专用端口固定 9223，且未区分「用户显式设置」与「默认」。
-    // 凡 9223 一律迁移为 0（下次启用专用模式时随机分配），保守但覆盖全部旧默认。
-    if (Number(raw.dedicatedPort) === 9223) {
+    // CCDPH-FIX(R7-P2-1): 读入迁移标记（旧 state.json 无此字段 → 保持 false）。
+    if (raw.dedicatedPortMigrated === true) browser.dedicatedPortMigrated = true;
+    // CCDPH-FIX(R6-P2-1/R7-P2-1): 旧默认专用端口 9223 **只迁一次**。旧版本未区分「用户显式设置」
+    // 与「默认」，故用 dedicatedPortMigrated 标记区分：未迁过的 9223 视为旧默认 → 迁移为 0；
+    // 已迁过之后用户再显式设 9223 → 保留（否则显式 9223 会在每次重启被静默回退）。
+    if (Number(raw.dedicatedPort) === 9223 && !browser.dedicatedPortMigrated) {
       browser.dedicatedPort = 0;
+      browser.dedicatedPortMigrated = true;
       changed = true;
       console.warn(
         "[ccdph] 检测到旧默认专用浏览器端口 9223，已迁移为未配置（启用专用模式时将随机分配端口）",
