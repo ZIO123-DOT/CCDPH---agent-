@@ -1126,17 +1126,33 @@ async function findClaude() {
     "@anthropic-ai", "claude-code", "bin", "claude.exe"));
   push(path.join(home, ".bun", "bin", "claude.exe"));
   push(path.join(localAppData, "Programs", "claude", "claude.exe"));
-  // where.exe 兜底：能找到 PATH 里注册的 claude.cmd / claude.exe / claude.bat
-  try {
-    const { stdout } = await exec(WINDOWS_WHERE_EXE, ["claude"], {
-      windowsHide: true,
-      timeout: 8000,
-    });
-    for (const line of stdout.split(/\r?\n/)) push(line.trim());
-  } catch { }
+  // macOS：Homebrew（Apple Silicon / Intel）、npm 全局、bun 的裸 `claude` 二进制
+  push("/opt/homebrew/bin/claude");
+  push("/usr/local/bin/claude");
+  push(path.join(home, ".npm-global", "bin", "claude"));
+  push(path.join(home, ".bun", "bin", "claude"));
+  // where.exe 兜底：能找到 PATH 里注册的 claude.cmd / claude.exe / claude.bat（仅 Windows）
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await exec(WINDOWS_WHERE_EXE, ["claude"], {
+        windowsHide: true,
+        timeout: 8000,
+      });
+      for (const line of stdout.split(/\r?\n/)) push(line.trim());
+    } catch { }
+  } else {
+    // Unix 兜底：which claude（macOS/Linux）
+    try {
+      const { stdout } = await exec("which", ["claude"], {
+        timeout: 8000,
+      });
+      for (const line of stdout.split(/\r?\n/)) push(line.trim());
+    } catch { }
+  }
   for (const dir of (process.env.PATH || "").split(path.delimiter)) {
     push(path.join(dir, "claude.exe"));
     push(path.join(dir, "claude.cmd"));
+    push(path.join(dir, "claude"));
     push(path.join(dir, "node_modules", "@anthropic-ai", "claude-code",
       "bin", "claude.exe"));
   }
