@@ -3354,6 +3354,11 @@ const json = (res, value, code = 200) => {
 };
 async function git(cwd, args) {
   const safeDirectory = path.resolve(cwd);
+  // CCDPH-FIX(NIT-safe.directory): `-c safe.directory=<path>` 的取值若含换行等控制字符，
+  // git 会把它解析为额外的 config 指令（跨行注入）。路径来自 workspaceRoot（realpath 收敛），
+  // 正常不含控制字符，这里做防御性拒绝。
+  if (/[\r\n\0]/.test(safeDirectory))
+    throw new Error("工作区路径包含不支持的字符");
   return (
     await exec(
       "git",
