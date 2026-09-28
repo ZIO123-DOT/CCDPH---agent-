@@ -27,6 +27,19 @@ export function createApiClient(
         signal: controller.signal,
       });
       const raw = await response.text();
+      // CCDPH-FIX(P2-401): 401 恢复必须先于 JSON.parse —— 若 401 响应体非 JSON（本地服务重启
+      // 瞬间/被代理改写），原实现会在解析处抛「请求失败（HTTP 401）」而永远走不到重鉴权分支，
+      // 用户只见误导性错误、无法自动恢复。把 401 判定提前，保证会话失效时无论响应体可解析
+      // 与否都能先尝试 onUnauthorized 自动恢复。
+      if (
+        response.status === 401 &&
+        options.retryUnauthorized !== false &&
+        typeof onUnauthorized === "function"
+      ) {
+        const recovered = await onUnauthorized();
+        if (recovered)
+          return api(route, data, { ...options, retryUnauthorized: false });
+      }
       let result = {};
       if (raw) {
         if (raw.length > maxChars) {
@@ -46,15 +59,6 @@ export function createApiClient(
               : `请求失败（HTTP ${response.status}）`,
           );
         }
-      }
-      if (
-        response.status === 401 &&
-        options.retryUnauthorized !== false &&
-        typeof onUnauthorized === "function"
-      ) {
-        const recovered = await onUnauthorized();
-        if (recovered)
-          return api(route, data, { ...options, retryUnauthorized: false });
       }
       if (!response.ok) throw new Error(result.error || "请求失败");
       return result;

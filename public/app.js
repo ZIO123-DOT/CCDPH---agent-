@@ -1548,8 +1548,13 @@ function assistantMessage(text, live = false) {
   // 流式渲染阶段跳过高亮（长回复下每次全量 highlight 很贵），结束后整段重渲
   if (!live) highlightCode(content);
   for (const link of content.querySelectorAll("a")) {
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    // CCDPH-FIX(P3-LINK): 仅外链走新窗口。此前一律 target=_blank，而桌面端
+    // setWindowOpenHandler 对非 https 一律 deny，导致页内 #锚点 与相对链接点击无反应。
+    // 相对/锚点链接保持同页默认行为，只给 http(s) 外链加新窗口与防 tabnabbing 属性。
+    if (/^https?:\/\//i.test(link.getAttribute("href") || "")) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
   }
   for (const pre of [...content.querySelectorAll("pre")]) {
     const code = pre.querySelector("code");
@@ -3323,11 +3328,22 @@ function resetApiProfileForm() {
   $("#api-profile-editing-hint").textContent = "新增模式";
   $("#api-profile-key-status").textContent = "未配置";
 }
+// CCDPH-FIX(P3-EXPORT): 导出时对疑似凭据的 env 字段脱敏。实际 API 密钥按 profileId 存
+// api-auth.json、不进 env（server.mjs:1799），但用户可能在 env 里自填敏感变量，导出一律打码，
+// 与「不含密钥」文案保持一致。
+const EXPORT_SENSITIVE_ENV_KEY = /(key|token|secret|password|auth|credential)/i;
+function redactExportedEnv(env) {
+  const out = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    out[key] = EXPORT_SENSITIVE_ENV_KEY.test(key) ? "***" : value;
+  }
+  return out;
+}
 function exportApiProfiles() {
   const payload = (state.settings.apiProfiles || []).map((p) => ({
     name: p.name,
     baseUrl: p.baseUrl,
-    env: p.env || {},
+    env: redactExportedEnv(p.env),
   }));
   const text = JSON.stringify({ exportedFrom: "CCDPH", providers: payload }, null, 2);
   // D-01 修复：原先 `navigator.clipboard?.writeText(text).catch(() => {})` 失败时无任何
