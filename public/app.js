@@ -2707,17 +2707,22 @@ function providerDisplayName() {
   }
   return "跟随 CC Switch";
 }
+// CCDPH-FIX(P3-GUARD): 面板渲染的代际守卫。异步响应可能乱序返回——旧请求的慢响应会把
+// 用户后续操作产生的新状态覆盖掉。每次调用递增本面板代际，响应返回后核对代际再落 DOM。
+let renderProviderSwitcherRevision = 0;
 async function renderProviderSwitcher() {
   const wrap = $("#provider-switcher");
   const label = $("#provider-switcher-label");
   const menu = $("#provider-switcher-menu");
   if (!wrap || !menu) return;
+  const revision = ++renderProviderSwitcherRevision;
   let data;
   try {
     data = await api("api-profiles");
   } catch {
     return;
   }
+  if (revision !== renderProviderSwitcherRevision) return;
   state.providerInfo = data;
   if (label) label.textContent = providerDisplayName();
   menu.replaceChildren();
@@ -2873,8 +2878,10 @@ function closeHookEditor() {
   hooksDraft = null;
   $("#hooks-editor").classList.add("hidden");
 }
+let renderHooksRevision = 0;
 async function renderHooks() {
   if (!$("#hooks-list")) return;
+  const revision = ++renderHooksRevision;
   let data;
   try {
     data = await api("hooks");
@@ -2885,6 +2892,7 @@ async function renderHooks() {
     );
     return;
   }
+  if (revision !== renderHooksRevision) return;
   hooksState = { events: data.events || [], hooks: data.hooks || {} };
   fillHookEventOptions();
   setNodeText(
@@ -2942,8 +2950,10 @@ async function renderHooks() {
 }
 
 // ---- Worktrees 面板：列出 / 新建 / 移除 / 打开（路径合法性由后端校验） ----
+let renderWorktreesRevision = 0;
 async function renderWorktrees() {
   if (!$("#worktrees-list")) return;
+  const revision = ++renderWorktreesRevision;
   let data;
   try {
     data = await api("worktrees?" + workspaceQuery());
@@ -2953,6 +2963,7 @@ async function renderWorktrees() {
     );
     return;
   }
+  if (revision !== renderWorktreesRevision) return;
   const list = $("#worktrees-list");
   list.replaceChildren();
   if (!data.git) {
@@ -3226,9 +3237,11 @@ $("#browser-launch").onclick = action(async () => {
 $("#browser-refresh").onclick = action(async () => {
   await renderBrowserPanel();
 });
+let renderApiProfilesRevision = 0;
 async function renderApiProfiles() {
   const list = $("#api-profile-list");
   if (!list) return;
+  const revision = ++renderApiProfilesRevision;
   let data;
   try {
     data = await api("api-profiles");
@@ -3236,6 +3249,7 @@ async function renderApiProfiles() {
     list.replaceChildren(el("div", "muted", "供应商列表加载失败"));
     return;
   }
+  if (revision !== renderApiProfilesRevision) return;
   const profiles = data.profiles || [];
   state.providerInfo = data;
   const editingId = apiProfileDraft?.id || "";
@@ -3333,9 +3347,11 @@ function exportApiProfiles() {
 
 // ---- MCP 服务器管理（用户级 ~/.claude.json，写前自动备份） ----
 let mcpDraft = null; // null=新增；字符串=正在编辑的用户级名称
+let renderMcpServersRevision = 0;
 async function renderMcpServers() {
   const list = $("#mcp-server-list");
   if (!list) return;
+  const revision = ++renderMcpServersRevision;
   let data;
   try {
     data = await api("mcp-servers?" + workspaceQuery());
@@ -3343,6 +3359,7 @@ async function renderMcpServers() {
     list.replaceChildren(el("div", "muted", "MCP 列表加载失败"));
     return;
   }
+  if (revision !== renderMcpServersRevision) return;
   const servers = data.servers || [];
   list.replaceChildren();
   if (!servers.length) {
@@ -3507,8 +3524,10 @@ function applyGitIdentityScope(data) {
       : "写入全局（git config --global），对所有仓库生效",
   );
 }
+let renderGitConfigRevision = 0;
 async function renderGitConfig() {
   if (!$("#git-user-name")) return;
+  const revision = ++renderGitConfigRevision;
   let data;
   try {
     data = await api("git-config?" + workspaceQuery());
@@ -3521,6 +3540,7 @@ async function renderGitConfig() {
     );
     return;
   }
+  if (revision !== renderGitConfigRevision) return;
   renderGitOverview(data);
   applyGitIdentityScope(data);
   const list = $("#git-remote-list");

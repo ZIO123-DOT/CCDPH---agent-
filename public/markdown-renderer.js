@@ -160,7 +160,10 @@ export const markdown = (text, cache = true) => {
   let html;
   try {
     html = DOMPurify.sanitize(marked.parse(key), {
-      FORBID_TAGS: ["img", "style", "input", "form"],
+      // CCDPH-FIX(P3-MD-1): 显式禁止 svg/math —— DOMPurify 默认允许 SVG/MathML（为图表等
+      // 场景），而模型输出里的 <svg>（可含脚本/href 外链）与 <math> 并非本应用所需。此前
+      // 仅靠 DOMPurify 默认净化 + CSP `img-src 'self' data:` 兜底，这里显式缩小攻击面。
+      FORBID_TAGS: ["img", "style", "input", "form", "svg", "math"],
       FORBID_ATTR: ["style"],
       // 模型输出里的 id/name 不能与应用控件同名，否则会让 document.querySelector
       // 命中消息区中的注入节点。保留锚点语义，但统一加 user-content- 前缀。
@@ -189,7 +192,10 @@ export const markdown = (text, cache = true) => {
     } catch (classStripError) {
       console.error("消息 class 剥离失败，已改为禁用 class 的净化", classStripError);
       html = DOMPurify.sanitize(html, {
-        FORBID_TAGS: ["img", "style", "input", "form"],
+        // CCDPH-FIX(P3-MD-1): 显式禁止 svg/math —— DOMPurify 默认允许 SVG/MathML（为图表等
+      // 场景），而模型输出里的 <svg>（可含脚本/href 外链）与 <math> 并非本应用所需。此前
+      // 仅靠 DOMPurify 默认净化 + CSP `img-src 'self' data:` 兜底，这里显式缩小攻击面。
+      FORBID_TAGS: ["img", "style", "input", "form", "svg", "math"],
         FORBID_ATTR: ["style", "class"],
         SANITIZE_NAMED_PROPS: true,
       });
