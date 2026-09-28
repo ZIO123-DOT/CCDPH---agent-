@@ -123,7 +123,8 @@ function raw(method, pathname, headers = {}) {
 
 try {
   await startServer();
-  const auth = { "x-workbench-token": token };
+  // CCDPH-FIX(R5-P3-4): 启动令牌换取 Cookie 后会作废，auth 需跟随 token 更新（A-09 里重赋值）。
+  let auth = { "x-workbench-token": token };
 
   // ==== 准备：创建项目 & 会话（后续用例复用） ================================
   const createdProject = await api("POST", "/api/projects", { body: { path: projectDir } });
@@ -178,6 +179,8 @@ try {
     const r = await raw("GET", "/api/state", { ...auth, Host: `localhost:${PORT}` });
     assert.equal(r.status, 403);
   });
+  // 保存换取 Cookie 前的启动令牌，供 A-09b 验证「单次使用后作废」。
+  const bootstrapTokenBeforeExchange = token;
   await test("A-09", "P1", "流式接口换取 HttpOnly 会话 Cookie", async () => {
     const r = await api("POST", "/api/auth/session", { body: {} });
     assert.equal(r.status, 200);
@@ -185,6 +188,17 @@ try {
     assert.match(streamCookie, /^ccdph_stream_auth=[0-9a-f]{64}$/);
     assert.match(r.headers.get("set-cookie") || "", /HttpOnly/i);
     assert.match(r.headers.get("set-cookie") || "", /SameSite=Strict/i);
+    // CCDPH-FIX(R5-P3-4): 换取 Cookie 后启动令牌（token）已作废，后续用例改用主进程令牌
+    // streamAuthToken（从 Cookie 值提取，命中服务端 x-workbench-token=streamAuthToken 校验分支）。
+    token = streamCookie.slice("ccdph_stream_auth=".length);
+    auth = { "x-workbench-token": token };
+  });
+  await test("A-09b", "P0", "启动令牌换取 Cookie 后即作废（单次使用）", async () => {
+    // 用「已作废」的启动令牌再访问应 401；此处用 A-09 之前保存的启动令牌值验证单次性。
+    const r = await api("GET", "/api/state", {
+      tokenOverride: bootstrapTokenBeforeExchange,
+    });
+    assert.equal(r.status, 401);
   });
   await test("A-10", "P1", "HttpOnly 会话 Cookie 可鉴权普通 API", async () => {
     const response = await fetch(`${ORIGIN}/api/state`, {
