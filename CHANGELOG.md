@@ -2,6 +2,24 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.9] - 2026-09-28
+
+> 第七轮修复：把第六轮独立复审发现的 1×P2 + 2×P3（9223 迁移一次性、端口回读加固）落地。
+
+### Fixed
+
+- **P2（一次性迁移）** 9223 迁移改为**一次性**：新增 `browser.dedicatedPortMigrated` 标记，旧默认 9223
+  迁为 0 并置标记后，用户显式重设的 9223 不再被每次重启静默回退。
+- **P3（回读包含性校验）** `cdpEndpointFromSettings` 回读 `DevToolsActivePort` 前对 `profileDir` 做
+  DATA_DIR 包含性校验，越界则跳过回读——阻断篡改 state.json 借恶意 profileDir 让 `connectOverCDP`
+  连任意本机端口（非真 SSRF，host 硬编码 127.0.0.1）。
+- **P3（缓存 + 句柄）** `isPortFree` error 分支显式 `server.close()`；专用端口回读加
+  mtime+size+profileDir 缓存，与 attach 分支同口径。
+
+### 回归护栏
+
+- `port-migration.mjs` 补「显式 9223 保留」断言（两阶段：迁移一次 + 显式保留）。
+
 ## [0.3.8] - 2026-09-28
 
 > 第六轮修复：补齐 CDP 端口随机化的存量迁移与端口一致性收尾（对应第五轮独立复审的 1×P2 + 2×P3）。
