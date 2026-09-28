@@ -71,8 +71,9 @@ export async function cdpEndpointFromSettings(browserSettings) {
     } catch { }
     return "";
   }
-  const port = Number(browserSettings.dedicatedPort) || 9223;
-  return `http://127.0.0.1:${port}`;
+  // CCDPH-FIX(R5-P2-4): 端口未配置（0）时 fail-closed 返回空，不再回退到可预测的 9223。
+  const port = Number(browserSettings.dedicatedPort) || 0;
+  return port ? `http://127.0.0.1:${port}` : "";
 }
 
 // D-03 修复：CDP 连接此前只在心跳失败分支关闭，两条泄漏路径——①停用浏览器 /

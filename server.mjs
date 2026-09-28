@@ -78,6 +78,11 @@ import { reconcileDedicatedBrowser, withBrowserSettingsTransition } from "./brow
 const token = randomBytes(32).toString("hex");
 const streamAuthToken = randomBytes(32).toString("hex");
 const STREAM_AUTH_COOKIE = "ccdph_stream_auth";
+// CCDPH-FIX(R5-P3-4): 启动令牌（token，出现在窗口 URL hash）**单次使用**——渲染层用它换取
+// HttpOnly 会话 Cookie 后即作废。此后即使同机进程在启动窗口期读到了 URL hash，也拿不到持久
+// 会话凭据。主进程（审批提交）改用独立的 streamAuthToken（见 getRuntime 与 desktop.cjs），
+// 二者解耦后 token 才能安全单次化。
+let bootstrapTokenConsumed = false;
 const port = Number(process.env.WORKBENCH_PORT || 4318);
 const origin = `http://127.0.0.1:${port}`;
 const CCSWITCH_DB =
@@ -141,7 +146,9 @@ const DEFAULT_SETTINGS = {
     enabled: false,
     mode: "attach",
     cdpEndpoint: "",
-    dedicatedPort: 9223,
+    // CCDPH-FIX(R5-P2-4): 默认 0 = 未显式配置，启用专用模式时随机分配高端口（见
+    // /api/browser/enable 与 /api/browser/launch）。不再固定 9223。
+    dedicatedPort: 0,
     profileDir: "",
     allowOrigins: [],
     blockOrigins: [],
@@ -2597,7 +2604,13 @@ export function safeNotify(payload) {
   }
 }
 export function getRuntime() {
-  return { url: `${origin}/#${token}`, activeRuns: runs.size };
+  // CCDPH-FIX(R5-P3-4): streamAuthToken 只暴露给主进程（desktop.cjs 审批提交用），绝不出现在
+  // URL 或任何回传渲染层/落盘的结构里。渲染层走 HttpOnly Cookie，主进程走该值。
+  return {
+    url: `${origin}/#${token}`,
+    streamAuthToken,
+    activeRuns: runs.size,
+  };
 }
 export function getSettings() {
   return { ...db.settings };
@@ -5378,7 +5391,10 @@ async function route(req, res) {
   );
   const authenticated =
     !isApi ||
-    safeEq(req.headers["x-workbench-token"], token) ||
+    // CCDPH-FIX(R5-P3-4): 启动令牌 token 单次使用——换取 Cookie 后不再接受；主进程与渲染层
+    // 此后分别凭 streamAuthToken 头 / HttpOnly Cookie 认证。
+    (!bootstrapTokenConsumed && safeEq(req.headers["x-workbench-token"], token)) ||
+    safeEq(req.headers["x-workbench-token"], streamAuthToken) ||
     safeEq(cookies[STREAM_AUTH_COOKIE], streamAuthToken);
   if (!authenticated) {
     if (!allowUnauthenticatedApiRequest(limiterKey)) {
@@ -5393,6 +5409,8 @@ async function route(req, res) {
     return json(res, { error: "请求过于频繁，请稍后重试" }, 429);
   }
   if (req.method === "POST" && pathname === "/api/auth/session") {
+    // CCDPH-FIX(R5-P3-4): 换取 Cookie 成功后立即作废启动令牌 token。
+    bootstrapTokenConsumed = true;
     res.setHeader(
       "Set-Cookie",
       `${STREAM_AUTH_COOKIE}=${streamAuthToken}; HttpOnly; SameSite=Strict; Path=/api`,

@@ -31,7 +31,10 @@ export async function reconcileDedicatedBrowser(settings, deps) {
     return { action: current ? "stopped" : "unchanged", current: null };
   }
 
-  const port = Number(settings.dedicatedPort) || 9223;
+  // CCDPH-FIX(R5-P2-4): 端口未配置（0）时拒绝启动专用浏览器（fail-closed），不再回退 9223。
+  // 正常路径下 /api/browser/enable 与 /api/browser/launch 已随机分配并持久化端口。
+  const port = Number(settings.dedicatedPort) || 0;
+  if (!port) throw new Error("专用浏览器端口未配置，请先在设置里启用并分配端口");
   const profileDir = settings.profileDir || path.join(dataDir, "browser-profile");
   if (
     current &&

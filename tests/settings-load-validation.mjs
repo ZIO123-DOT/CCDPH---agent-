@@ -38,7 +38,7 @@ try {
   const browser = settings.browser;
   assert.ok(typeof browser.enabled === "boolean", "enabled 必须是布尔");
   assert.ok(["attach", "dedicated"].includes(browser.mode), "mode 必须是合法枚举");
-  assert.equal(browser.dedicatedPort, 9223, "非法端口应回退默认 9223");
+  assert.equal(browser.dedicatedPort, 0, "非法端口应回退未配置(0)，启用专用模式时才随机分配");
   assert.equal(browser.imageResponses, "omit", "非法 imageResponses 应回退默认");
   // 含 ; / CRLF / < > / 前导 - 的条目必须被过滤；合法域名保留；每条 ≤200 字符。
   assert.ok(browser.allowOrigins.includes("ok.example"), "合法 origin 应保留");

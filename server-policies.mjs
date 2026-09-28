@@ -1,4 +1,13 @@
+import { randomInt } from "node:crypto";
 import { STATE_CONTENT_MAX_DEPTH } from "./state-safety.mjs";
+
+// CCDPH-FIX(R5-P2-4): 专用浏览器调试端口默认不再固定 9223，改为随机高端口。CDP 无鉴权，
+// 固定默认端口 = 任何同机进程都知道该连哪里；随机化后同机攻击者必须先探测端口，抬高门槛
+//（仍可 netstat 发现，属纵深防御而非根本消除——CDP 协议本身无令牌，根因见 browser/service.mjs）。
+export function randomDedicatedPort() {
+  // 20000–59999：避开特权端口(0-1023)与常见服务端口，降低与他程序冲突概率
+  return randomInt(20000, 60000);
+}
 
 export function decodeJsonBuffer(buffer) {
   if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);

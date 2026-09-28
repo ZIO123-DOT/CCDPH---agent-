@@ -33,7 +33,10 @@ export function buildPlaywrightMcpConfig(browser) {
     args.push("--cdp-endpoint=msedge");
   } else {
     // 专用授权 Profile：后端已用调试端口拉起独立 Edge
-    const port = Number(browser.dedicatedPort) || 9223;
+    // CCDPH-FIX(R5-P2-4): 端口未配置（0）时不生成 MCP 注入（端口在启用专用模式时随机分配并持久化，
+    // 正常路径此处恒为有效端口；0 只会出现在被篡改的状态）。
+    const port = Number(browser.dedicatedPort) || 0;
+    if (!port) return null;
     args.push(`--cdp-endpoint=http://127.0.0.1:${port}`);
   }
   if (browser.imageResponses && browser.imageResponses !== "allow") {
@@ -67,5 +70,11 @@ export function buildPlaywrightMcpConfig(browser) {
 }
 
 export function browserMcpEnabled(browser) {
-  return Boolean(browser && browser.enabled);
+  // CCDPH-FIX(R5-P2-4): 专用模式还需端口已配置（>0），否则不注入 MCP——端口在启用专用模式时
+  // 随机分配并持久化，0 只会出现在被篡改的状态；此时 fail-closed 不注入，而不是带着 :0 或
+  // 可预测端口去连。
+  if (!browser || !browser.enabled) return false;
+  if ((browser.mode || "attach") === "dedicated" && !(Number(browser.dedicatedPort) > 0))
+    return false;
+  return true;
 }

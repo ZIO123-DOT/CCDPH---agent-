@@ -673,11 +673,13 @@ else {
         try {
           const runtime = engine.getRuntime();
           const url = new URL(runtime.url);
+          // CCDPH-FIX(R5-P3-4): 审批提交用独立的 streamAuthToken（主进程持久的应用令牌），
+          // 不再复用 URL hash 里的启动令牌——后者换取 Cookie 后即作废，复用会在首次会话鉴权后失效。
           const response = await fetch(`${url.origin}/api/approve`, {
             method: "POST",
             headers: {
               "content-type": "application/json",
-              "x-workbench-token": url.hash.slice(1),
+              "x-workbench-token": runtime.streamAuthToken,
             },
             body: JSON.stringify(payload),
           });
