@@ -15,6 +15,10 @@ const EDGE_PATHS = [
   "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
   envPath("ProgramFiles(x86)", "Microsoft\\Edge\\Application\\msedge.exe"),
   envPath("ProgramFiles", "Microsoft\\Edge\\Application\\msedge.exe"),
+  // macOS：Edge 的 .app 内可执行文件路径
+  ...(process.platform === "darwin"
+    ? ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"]
+    : []),
 ];
 const CHROME_PATHS = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -22,6 +26,10 @@ const CHROME_PATHS = [
   envPath("ProgramFiles", "Google\\Chrome\\Application\\chrome.exe"),
   envPath("ProgramFiles(x86)", "Google\\Chrome\\Application\\chrome.exe"),
   envPath("LOCALAPPDATA", "Google\\Chrome\\Application\\chrome.exe"),
+  // macOS：Chrome 的 .app 内可执行文件路径
+  ...(process.platform === "darwin"
+    ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    : []),
 ];
 
 function firstExisting(paths) {
@@ -35,12 +43,15 @@ function firstExisting(paths) {
 
 // 从 Edge 的 User Data 目录读 DevToolsActivePort 文件（edge://inspect 授权后写入）
 function edgeDevToolsActivePort() {
-  const userDataDir = path.join(
-    process.env.LOCALAPPDATA || "",
-    "Microsoft",
-    "Edge",
-    "User Data",
-  );
+  const userDataDir =
+    process.platform === "darwin"
+      ? path.join(os.homedir(), "Library", "Application Support", "Microsoft Edge")
+      : path.join(
+          process.env.LOCALAPPDATA || "",
+          "Microsoft",
+          "Edge",
+          "User Data",
+        );
   const file = path.join(userDataDir, "DevToolsActivePort");
   try {
     const raw = fs.readFileSync(file, "utf8").trim();
