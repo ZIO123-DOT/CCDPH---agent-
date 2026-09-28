@@ -2,6 +2,22 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.11] - 2026-09-28
+
+> 第九轮修复：落地第八轮独立复审（四链全流程）发现的 3×P3 前端健壮性项。
+
+### Fixed
+
+- **P3（统一确认框）** 运行中切换到「自动模式」的二次确认由原生 `window.confirm` 改为应用统一的
+  `confirmAction` 自定义对话框，消除阻塞与原生样式不一致（`public/app.js`）。
+- **P3（SSH 远程解析）** `githubUrl` 的 SSH 远程解析由仅认 `github.com` 扩展为覆盖
+  GitHub/GitLab/Bitbucket/Gitee/Codeberg 全部已信任托管域名；产出 https URL 仍经 `trustedRepoUrl`
+  二次校验，安全边界不变（`public/app.js`）。
+- **P3（netstat 语言无关解析）** 专用浏览器残留身份核验不再依赖 `netstat` 的 `LISTENING` 字面量
+  （非英文 Windows 语言包会被本地化、甚至含空格导致列错位），改为锚定「本地地址 :端口」+「末位
+  PID」+「对端通配地址」三个语言无关不变量，修复非英文系统上残留清理退化为 unverifiable 的健壮性
+  缺口（`browser/service.mjs`）。
+
 ## [0.3.10] - 2026-09-28
 
 > 第八轮修复：落地第七轮独立复审发现的 2×P2 + 2×P3（回读 realpath 校验、显式写端口置标记、去缓存、端口类型归一化）。

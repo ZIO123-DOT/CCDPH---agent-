@@ -16,7 +16,7 @@
     },
     {
       "path": "browser/service.mjs",
-      "sha256": "656cd5532aaba0a8f9cdc3b8021759e55e6adc25b58f865002efae32a83124fc"
+      "sha256": "4233ec4a8ad668c4d75a902816fb3b3ece0d3e036ddca2ca58d21a8503eae47d"
     },
     {
       "path": "build/icon-512.png",
@@ -704,7 +704,7 @@
     },
     {
       "path": "public/app.js",
-      "sha256": "8e65d149b845e19d3f737dcc6919f6dc32acde1ca96791ab39aedbaf6e5ca6ae"
+      "sha256": "459a89191c3d6bc32de279bb0f5c1c0283faec1a147da886145ff1e1e164fa33"
     },
     {
       "path": "public/index.html",
