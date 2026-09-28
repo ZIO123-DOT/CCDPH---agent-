@@ -2,6 +2,45 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.6] - 2026-09-28
+
+> 第四轮独立审查（从零通读 + 四链技能 + 实测压测）后的修复轮。结论 0×P0 / 0×P1 / 4×P2 / 6×P3。
+
+### Fixed
+
+- **P2-1（文档）** 补上 `docs/browser-integration-design.md` —— `browser/service.mjs` / `detect.mjs` /
+  `mcp-config.mjs` 的注释长期引用该设计文档（§5.2/§7.1/§7.2/§8/§13.3）但文件缺失。现按实际实现
+  补全：CDP 端点解析、浏览器探测、MCP 运行时注入、专用浏览器生命周期与安全边界。
+- **P2-4（安全边界）** 专用授权浏览器的 CDP 调试端口是「本机回环 + 无鉴权」的固有暴露面（CDP
+  协议本身无令牌/鉴权）。启动清扫 + 退出整树收尾已覆盖「残留」窗口，但「运行中」窗口此前未向
+  用户说明。现在 `browserStatus` 对专用模式带出 `securityNote`，由 `/api/browser/status` 回传，
+  让设置页如实提示该端口的暴露面。
+- **P3-1（校验口径）** `normalizeModel` 现拒绝 `__proto__` / `prototype` / `constructor`，与
+  MCP/hook 名、审批答案的原型污染收口口径统一（此前白名单会放行这些不可能合法的模型名）。
+- **P3-3（诊断）** `scanStateComplexity` 区分「唯一节点数（nodes）」与「引用总数（references）」。
+  旧实现只返回去重后的 nodes，大量共享引用（如 20 万槽位指向同一对象）会让复杂度诊断低估真实
+  遍历成本与内存占用。
+- **P3-5（完整性）** `checkForUpdate` 对明文 http（本机回环）更新源带出 `warning`：sha256 与清单
+  同源拉取，无法抵御可伪造回环流量的同机进程。不阻断（本机测试源是合法用例），但绝不静默。
+- **P3-6（出站请求）** `/api/browser/tabs/close` 在出站 `fetch /json/close` 前显式用 `probeCdp`
+  复核目标端口**此刻仍是 CDP 端点**，把「这是 CDP 端点」从隐式（Playwright 已连上）改成显式，
+  杜绝把 close 请求发到任意本地服务。
+
+### 回归护栏
+
+- 更新 `tests/behavior.mjs` 的 `scanStateComplexity` 断言以覆盖新增的 `references` 字段（环引用
+  用例：nodes=1 / references=2，验证去重与引用计数分离）。
+
+### Notes
+
+- **未修（已声明的接受项）**：① 专用 CDP 端口无鉴权是 CDP 协议固有面，本轮以 `securityNote`
+  如实告知 + 既有「回环绑定 + 启动清扫 + 退出收尾」缓解，不引入 CDP 鉴权代理（过度工程）；
+  ② `server.mjs` 6266 行单体内聚属重构范畴，非缺陷，留待后续按关注点拆分；③ 单一静态令牌已由
+  「URL 摘除（replaceState）+ HttpOnly Cookie + 不落盘」缓解，同机威胁模型下的残余风险与 CDP
+  端口同源。
+- **发布卫生**：补 `v0.3.2` 追溯标签（锚定 `aa3bac0`，见该 tag 注释）；git 历史为 squash 重建，
+  细粒度条目无法 1:1 追溯，后续建议原子提交。
+
 ## [0.3.5] - 2026-09-28
 
 > 针对第二份独立复审（`CCDPH-前端独立深审报告-20260928-第二次.md`，0×P0 / 0×P1 / 4×P2 / 11×P3）
