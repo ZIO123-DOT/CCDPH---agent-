@@ -258,6 +258,42 @@ const PROFILE_MARKER = ".ccdph-browser-profile";
 // 返回 Promise 便于调用方等待，且永不 reject（server.mjs 里有多处不 await 的调用）。
 function killProcessTree(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
+  // macOS/Linux：子进程以 detached 启动（进程组组长），杀整个进程组即可；组不存在时退化为单进程 kill。
+  // 与 Windows 分支同口径：杀完复核进程是否已消失，已消失即视为成功。
+  if (process.platform !== "win32") {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(guard);
+        resolve(value);
+      };
+      const guard = setTimeout(() => {
+        try {
+          process.kill(pid, 0);
+          finish(false);
+        } catch {
+          finish(true);
+        }
+      }, 600);
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          /* 进程本就不存在 */
+        }
+      }
+      // 立即复核一次，避免明明已消失还要等 600ms
+      try {
+        process.kill(pid, 0);
+      } catch {
+        finish(true);
+      }
+    });
+  }
   return new Promise((resolve) => {
     let done = false;
     const finish = (value) => {
@@ -600,8 +636,11 @@ export async function launchDedicatedEdge(msedgePath, port, profileDir) {
       // 把子进程放进 Job Object，父进程退出后 Edge 会继续跑（这正是 BR-5 的成因）。
       // 所以「不残留」只能靠 desktop.cjs 的退出流程显式调用 stopDedicatedEdge()，
       // 不能指望系统回收。unref() 保留，避免这个句柄拖住事件循环。
+      // macOS/Linux：detached 让子进程成为进程组组长，stopDedicatedEdge 才能用 kill(-pid)
+      // 收掉整棵进程树（渲染/GPU/utility 子进程）。Windows 仍靠 taskkill /T，不需要。
       stdio: "ignore",
       windowsHide: true,
+      detached: process.platform !== "win32",
     });
   } catch (error) {
     dedicatedLaunchError = `无法启动专用浏览器（${error?.code || "spawn 失败"}）：${String(error?.message || error).slice(0, 200)}`;

@@ -95,12 +95,13 @@ export async function recoverUnreadableTerminalRecords(
 }
 
 export function terminalRegistryPlatformStatus(platform = process.platform) {
-  return platform === "win32"
-    ? { supported: true, reason: "" }
-    : {
-        supported: false,
-        reason: `终端异常退出恢复依赖 Windows Toolhelp32/taskkill，当前平台 ${platform} 不支持`,
-      };
+  // Windows 用 Toolhelp32 + taskkill；macOS 用 ps + kill；其它平台不支持。
+  if (platform === "win32" || platform === "darwin")
+    return { supported: true, reason: "" };
+  return {
+    supported: false,
+    reason: `终端异常退出恢复当前平台 ${platform} 不支持`,
+  };
 }
 
 // Compile the Toolhelp32 bridge once in a long-lived helper. The previous
@@ -388,8 +389,78 @@ export function createTerminalProcessRegistry({
     });
   }
 
+  // macOS：用 ps 枚举进程树，替代 Windows 的 Toolhelp32 快照。返回结构与 windowsProcessTable
+  // 一致（{ ProcessId, ParentProcessId, Name, Started }），writeSnapshot/sweep 共用同一字段。
+  async function unixProcessTable(rootPids = []) {
+    if (process.platform === "win32") return [];
+    const { stdout } = await exec(
+      "ps",
+      ["-axo", "pid=,ppid=,lstart=,comm="],
+      { timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const all = [];
+    for (const line of stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // 行格式：pid ppid lstart(5 段：星期 月 日 时间 年) comm(可能含空格)
+      const parts = trimmed.split(/\s+/);
+      if (parts.length < 7) continue;
+      const pid = Number(parts[0]);
+      const ppid = Number(parts[1]);
+      if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
+      all.push({
+        ProcessId: pid,
+        ParentProcessId: ppid,
+        Name: parts.slice(7).join(" ") || "",
+        Started: parts.slice(2, 7).join(" "),
+      });
+    }
+    const byPid = new Map(all.map((item) => [Number(item.ProcessId), item]));
+    const byParent = new Map();
+    for (const item of all) {
+      const parent = Number(item.ParentProcessId);
+      if (!byParent.has(parent)) byParent.set(parent, []);
+      byParent.get(parent).push(item);
+    }
+    const selected = new Set();
+    const queue = rootPids
+      .map(Number)
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+    while (queue.length) {
+      const pid = queue.shift();
+      if (selected.has(pid)) continue;
+      selected.add(pid);
+      for (const child of byParent.get(pid) || [])
+        queue.push(Number(child.ProcessId));
+    }
+    return [...selected].map((pid) => byPid.get(pid)).filter(Boolean);
+  }
+
+  function processTable(rootPids = []) {
+    return process.platform === "win32"
+      ? windowsProcessTable(rootPids)
+      : unixProcessTable(rootPids);
+  }
+
+  // 杀单个残留终端进程：Windows 用 taskkill /T /F；macOS/Linux 所有后代已在 records 里，
+  // 逐个 SIGKILL 即可（ESRCH = 进程已消失，视为成功）。
+  async function killTerminalProcess(pid, timeoutMs) {
+    if (process.platform === "win32") {
+      await exec(WINDOWS_TASKKILL_EXE, ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        timeout: timeoutMs,
+      });
+      return;
+    }
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
+
   async function writeSnapshot() {
-    if (process.platform !== "win32") return;
+    if (process.platform !== "win32" && process.platform !== "darwin") return;
     if (registryUnreadable) {
       const recovered = await recoverUnreadableTerminalRecords(
         file,
@@ -429,7 +500,7 @@ export function createTerminalProcessRegistry({
       stopProcessHelper();
       return;
     }
-    const table = await windowsProcessTable([...rootPids, process.pid]);
+    const table = await processTable([...rootPids, process.pid]);
     const byPid = new Map(table.map((item) => [Number(item.ProcessId), item]));
     const byParent = new Map();
     for (const item of table) {
@@ -497,7 +568,8 @@ export function createTerminalProcessRegistry({
   }
 
   function scheduleAfter(delay = 250) {
-    if (process.platform !== "win32" || delayedSnapshot) return;
+    if ((process.platform !== "win32" && process.platform !== "darwin") || delayedSnapshot)
+      return;
     delayedSnapshot = setTimeout(() => {
       delayedSnapshot = null;
       void schedule();
@@ -506,7 +578,7 @@ export function createTerminalProcessRegistry({
   }
 
   async function sweep() {
-    if (process.platform !== "win32") return 0;
+    if (process.platform !== "win32" && process.platform !== "darwin") return 0;
     await cleanupSnapshotTemps();
     registryUnreadable = false;
     const doc = await readTerminalRegistryDocument(file, {
@@ -523,7 +595,7 @@ export function createTerminalProcessRegistry({
     const records = Array.isArray(doc?.records) ? doc.records : [];
     let table;
     try {
-      table = await windowsProcessTable([
+      table = await processTable([
         Number(owner?.pid),
         ...records.map((record) => Number(record?.pid)),
       ]);
@@ -558,7 +630,7 @@ export function createTerminalProcessRegistry({
           continue;
         // PID 可能在首次快照与 taskkill 之间退出并被复用。每次 kill 前重新核验
         // 名称与启动时间，避免 /T 连坐结束复用该 PID 的无关进程树。
-        const immediateTable = await windowsProcessTable([pid]);
+        const immediateTable = await processTable([pid]);
         const immediate = immediateTable.find(
           (item) => Number(item.ProcessId) === pid,
         );
@@ -570,10 +642,7 @@ export function createTerminalProcessRegistry({
         )
           continue;
         try {
-          await exec(WINDOWS_TASKKILL_EXE, ["/PID", String(pid), "/T", "/F"], {
-            windowsHide: true,
-            timeout: killTimeout,
-          });
+          await killTerminalProcess(pid, killTimeout);
           removed += 1;
         } catch (error) {
           killFailures.push({ pid, error });

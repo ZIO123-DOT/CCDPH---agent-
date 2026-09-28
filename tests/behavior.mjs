@@ -283,8 +283,9 @@ assert.equal(canApplyPermissionModeLive("default", "plan"), true);
 assert.equal(browserMcpEnabled({ enabled: true }), true);
 assert.equal(browserMcpEnabled({ enabled: false }), false);
 assert.equal(terminalRegistryPlatformStatus("win32").supported, true);
+assert.equal(terminalRegistryPlatformStatus("darwin").supported, true);
 assert.equal(terminalRegistryPlatformStatus("linux").supported, false);
-assert.match(terminalRegistryPlatformStatus("darwin").reason, /不支持/);
+assert.match(terminalRegistryPlatformStatus("linux").reason, /不支持/);
 assert.equal(
   matchesDedicatedEdgeIdentity(
     '"msedge.exe","4321","Console","1","100,000 K"',

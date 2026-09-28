@@ -25,12 +25,28 @@ const POWERSHELL_EXE = path.join(
   "v1.0",
   "powershell.exe",
 );
+// SDK 平台二进制包（@anthropic-ai/claude-agent-sdk 的 optionalDependencies 按平台提供
+// 原生 claude 二进制）：Windows 用 claude.exe，macOS/Linux 用裸 claude。打包完整性清单
+// 与验签共用，避免写死 win32-x64。
+const SDK_PLATFORM_PACKAGES = {
+  "win32-x64": "claude-agent-sdk-win32-x64",
+  "win32-arm64": "claude-agent-sdk-win32-arm64",
+  "darwin-x64": "claude-agent-sdk-darwin-x64",
+  "darwin-arm64": "claude-agent-sdk-darwin-arm64",
+  "linux-x64": "claude-agent-sdk-linux-x64",
+  "linux-arm64": "claude-agent-sdk-linux-arm64",
+};
+const SDK_PLATFORM_PACKAGE =
+  SDK_PLATFORM_PACKAGES[`${process.platform}-${process.arch}`] ||
+  "claude-agent-sdk-win32-x64";
+const SDK_CLAUDE_BIN = process.platform === "win32" ? "claude.exe" : "claude";
+const SDK_CLAUDE_RELATIVE = `node_modules/@anthropic-ai/${SDK_PLATFORM_PACKAGE}/${SDK_CLAUDE_BIN}`;
 const REQUIRED_RUNTIME_FILES = [
   "desktop.cjs",
   "server.mjs",
   "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
   "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
-  "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
+  SDK_CLAUDE_RELATIVE,
 ];
 let window,
   engine,
@@ -153,8 +169,8 @@ function verifyClaudeExecutableSignature() {
     __dirname,
     "node_modules",
     "@anthropic-ai",
-    "claude-agent-sdk-win32-x64",
-    "claude.exe",
+    SDK_PLATFORM_PACKAGE,
+    SDK_CLAUDE_BIN,
   );
   return new Promise((resolve) => {
     execFile(
