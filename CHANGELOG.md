@@ -2,6 +2,32 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.12] - 2026-09-28
+
+> 第十轮修复：落地第二轮独立复审（四链全流程 + 第二模型交叉审查）复核后的可修复项。
+
+### Fixed
+
+- **P3（markdown 显式禁 svg/math）** `markdown-renderer.js` 两处 `FORBID_TAGS` 显式加入 `svg`/`math`，
+  缩小 DOMPurify 默认放行 SVG/MathML 带来的模型输出注入面（此前仅靠 DOMPurify 默认净化 + CSP 兜底）。
+- **P3（设置面板代际守卫）** `renderProviderSwitcher` / `renderHooks` / `renderWorktrees` /
+  `renderApiProfiles` / `renderMcpServers` / `renderGitConfig` 六处面板渲染增加代际计数器，
+  阻断「旧请求慢响应覆盖用户后续新状态」的乱序竞态。
+
+### 复核结论（无需改动，如实记录）
+
+- 第二模型交叉审查提出的 P1「AskUserQuestion 答案键原型污染」经复核：服务端 `normalizeApprovalAnswers`
+  （`server.mjs:3406`）已显式拒绝 `__proto__/prototype/constructor` 键 + 限项数/长度，前端
+  `Object.fromEntries` 仅建自有属性，边界已闭环，非开放缺陷。
+- P2「流式 text_delta 不去重」经复核：服务端在连接时显式下发 `snapshot`（`server.mjs:5297`），
+  前端 snapshot 分支重置 liveText（`app.js:1018`），delta 为一次性 broadcast 不落盘、不重放，
+  不存在重放重复累积路径。
+- P2「reconcile 全量序列化」：现有 `eventRenderFingerprints` WeakMap + `trimRetainedImages`
+  显式 `delete` 的失效机制正确处理事件原地变异（图片预览剥离），按 id 缓存的朴素优化会引入
+  陈旧指纹缺陷，故保持现状。
+- P2「answers 键冲突」：SDK 的 AskUserQuestion 以问题文案为键，改为索引会破坏 SDK 匹配，属
+  上游限制，前端无法安全修复。
+
 ## [0.3.11] - 2026-09-28
 
 > 第九轮修复：落地第八轮独立复审（四链全流程）发现的 3×P3 前端健壮性项。

@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "53261d721533cf563d503fcfa9cde6e6386400a9e7b4752f0d791e0f24ffd35f"
+      "sha256": "06b15ce4e5d1af69f196ce0250fadfb529c458c755ac5efb5424029a9ed73e08"
     },
     {
       "path": "package.json",
-      "sha256": "86c1cda676505684b3e78d4c66df5056797315d86f41552758b31c4291b9fd91"
+      "sha256": "def5e7e8b3ccfe385cc42c64acad9afc7287dd3f82d69256b131f7722ebabddc"
     },
     {
       "path": "preload-approval.cjs",
@@ -704,7 +704,7 @@
     },
     {
       "path": "public/app.js",
-      "sha256": "459a89191c3d6bc32de279bb0f5c1c0283faec1a147da886145ff1e1e164fa33"
+      "sha256": "82503bb3b6d7df82712f81e99646fdd27187626fb9d6a68d39d46e444168a46e"
     },
     {
       "path": "public/index.html",
@@ -712,7 +712,7 @@
     },
     {
       "path": "public/markdown-renderer.js",
-      "sha256": "b26c085bb2fd2f46ce40d5bde2a45908a0e2ed7dc7d75e2f95076fd3ca8f0fc4"
+      "sha256": "381f8f21ec457b4aaccd60692c4b9eaab17d4cb137a9f2ca0da0d543bc669ed7"
     },
     {
       "path": "public/style.css",
