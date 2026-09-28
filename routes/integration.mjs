@@ -1,4 +1,5 @@
 import path from "node:path";
+import { probeCdp } from "../browser/detect.mjs";
 
 export function createIntegrationRoute(deps) {
   const {
@@ -56,6 +57,7 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       },
       tabs: info.tabs || [],
       ...(info.launchError ? { launchError: info.launchError } : {}),
+      ...(info.securityNote ? { securityNote: info.securityNote } : {}),
     });
   }
   if (req.method === "POST" && pathname === "/api/browser/enable") {
@@ -140,6 +142,16 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
     const status = await browserStatus(db.settings.browser);
     const port = status.port;
     if (!port) throw new Error("浏览器未连接");
+    // CCDPH-FIX(R4-P3-6): 出站 fetch 前显式复核目标端口**此刻仍是 CDP 端点**（响应
+    // /json/version）。虽然 status.port 只来自 connectOverCDP 成功后的真实端口，但
+    // 「连接确认」与「/json/close 请求」之间仍存在毫秒级 TOCTOU；且把「这是 CDP 端点」
+    // 这一前提从隐式（Playwright 已连上）改成显式探针，杜绝把 close 请求发到任意本地服务。
+    let cdpConfirmed = false;
+    try {
+      cdpConfirmed = Boolean((await probeCdp(port, 1200)).connected);
+    } catch { }
+    if (!cdpConfirmed)
+      return json(res, { ok: false, error: "浏览器调试端口未就绪或不是 CDP 端点，已拒绝关闭标签" });
     // CCDPH-FIX(F-06): 与文件里其它出站请求一致加显式超时。fetch 默认没有超时，
     // CDP 端口被僵尸进程占住（accept 后不回包）时这个请求会永远挂着、请求槽被占死，
     // 而 .catch(() => null) 只处理 rejection、处理不了「一直不返回」。

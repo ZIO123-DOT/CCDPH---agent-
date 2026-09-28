@@ -128,6 +128,14 @@ async function ensureConnection(browserSettings) {
 export async function browserStatus(browserSettings) {
   const conn = await ensureConnection(browserSettings).catch((e) => ({ ok: false, error: e.message }));
   const info = { connected: Boolean(conn.ok), browser: "", version: "", port: 0, tabs: [] };
+  // CCDPH-FIX(R4-P2-4): 专用模式使用「本机回环 + 无鉴权」的 CDP 调试端口——CDP 协议本身
+  // 没有令牌/鉴权，运行期间同机同用户进程可经 /json/list 列出并驱动该浏览器（读已登录站点
+  // cookie、执行页面 JS）。启动清扫 + 退出 taskkill 已覆盖「残留」窗口，但「运行中」窗口的
+  // 暴露是固有面，必须如实带出提示，让用户知晓，而非静默。
+  if (browserSettings?.mode === "dedicated") {
+    info.securityNote =
+      "专用授权浏览器使用本机回环的无鉴权调试端口；运行期间同一台电脑上的其它进程可连接该端口，请勿在不可信的多用户环境使用。";
+  }
   // CCDPH-FIX(BR-6): 专用 Edge 启动失败（spawn ENOENT/EACCES、被残留实例顶掉、profileDir 被拒）
   // 不能让调用方只看到一句「未连接」。launchError 是**新增的附加字段**（不影响既有字段），
   // /api/browser/enable 会把整个 status 原样返回给设置页。

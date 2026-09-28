@@ -76,7 +76,13 @@ assert.equal(fitsJsonBudget({ ok: "small" }, 1024), true);
 assert.equal(fitsJsonBudget({ huge: "x".repeat(4096) }, 1024), false);
 const cyclicComplexity = {};
 cyclicComplexity.self = cyclicComplexity;
-assert.deepEqual(scanStateComplexity(cyclicComplexity), { nodes: 1, maxDepth: 0 });
+// R4-P3-3: scanStateComplexity 现额外返回 references（引用总数）。环引用：唯一节点 1 个，
+// 但 self 引用被再次弹出计 1 次 → references=2，验证去重与引用计数分离。
+assert.deepEqual(scanStateComplexity(cyclicComplexity), {
+  nodes: 1,
+  references: 2,
+  maxDepth: 0,
+});
 let toJsonCalls = 0;
 const chainedToJson = function () {
   toJsonCalls += 1;

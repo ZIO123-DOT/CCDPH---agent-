@@ -1308,6 +1308,12 @@ async function checkForUpdate() {
     .toLowerCase();
   if (sha256 && !/^[0-9a-f]{64}$/.test(sha256))
     throw new Error("更新源的 sha256 格式不正确（应为 64 位十六进制）");
+  // CCDPH-FIX(R4-P3-5): 明文 http（本机回环）时 sha256 与清单同源拉取，无法提供完整性
+  // 保证（同机进程可同时伪造两者）。不阻断——本机测试源是合法用例——但必须如实带出警告，
+  // 前端据此提示用户，绝不静默。
+  const plaintextChannel =
+    !/^https:\/\//i.test(manifestUrl) ||
+    (Boolean(url) && !/^https:\/\//i.test(url));
   return {
     ...result,
     latest,
@@ -1316,6 +1322,13 @@ async function checkForUpdate() {
     sha256,
     integrity: sha256 ? "sha256" : "none",
     notes: String(manifest.notes || ""),
+    ...(plaintextChannel
+      ? {
+          warning:
+            "更新源或更新包使用明文 http（本机回环地址）。sha256 与清单同源拉取，" +
+            "无法抵御可伪造回环流量的同机进程；明文源仅建议用于受信本机测试环境。",
+        }
+      : {}),
   };
 }
 export function assertSafeZipEntries(extractDir, entryNames) {
@@ -2011,10 +2024,14 @@ const GENERIC_MODELS = new Set(["", "inherit", "sonnet", "opus", "haiku"]);
 // （实测能落盘 200000 字符），同一字段两套口径；并且 /api/send 在该字段缺省时会
 // 把已选模型改写成 ""（静默清空）。统一为：合法 → 返回规范化值；
 // 非法或非字符串 → 返回 null，调用方保持原值不动。
+// CCDPH-FIX(R4-P3-1): 与 MCP/hook 名、审批答案同一收口口径——这些名字不可能是合法模型名，
+// 放行只会留下「在校验层通过了原型相关名」的不一致（实测虽无污染路径，但口径应统一）。
+const PROTOTYPE_POLLUTION_NAMES = new Set(["__proto__", "prototype", "constructor"]);
 export function normalizeModel(value) {
   if (typeof value !== "string") return null;
   const model = value.trim();
   if (model.length > 80) return null;
+  if (PROTOTYPE_POLLUTION_NAMES.has(model)) return null;
   return GENERIC_MODELS.has(model) || /^[a-zA-Z0-9._\-/:]+$/.test(model) ? model : null;
 }
 function migrateSessionsTo(targetProviderId, fallbackModel) {

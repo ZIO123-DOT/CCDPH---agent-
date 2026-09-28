@@ -23,11 +23,16 @@ export function scanStateComplexity(value) {
   const stack = [{ value, depth: 0 }];
   const seen = new WeakSet();
   let nodes = 0;
+  // CCDPH-FIX(R4-P3-3): 区分「唯一节点数」与「引用总数」。旧实现只返回去重后的 nodes，
+  // 大量共享引用（如 20 万槽位指向同一对象）会让诊断低估真实遍历成本与内存占用。
+  // references 计入每一个被弹出的对象引用（含共享/重复），nodes 仍按 WeakSet 去重。
+  let references = 0;
   let maxDepth = 0;
   while (stack.length) {
     const current = stack.pop();
     const item = current.value;
     if (!item || typeof item !== "object") continue;
+    references += 1;
     if (seen.has(item)) continue;
     seen.add(item);
     nodes += 1;
@@ -37,7 +42,7 @@ export function scanStateComplexity(value) {
       if (child && typeof child === "object")
         stack.push({ value: child, depth: current.depth + 1 });
   }
-  return { nodes, maxDepth };
+  return { nodes, references, maxDepth };
 }
 // CCDPH-FIX(A10-17): 计算**某个值自身**的嵌套最大深度（相对计数，不含根这一层）。
 // 用于对单条事件/单条消息做局部判定：内容过深时只折叠那一条，绝不因此把整库判损坏。
