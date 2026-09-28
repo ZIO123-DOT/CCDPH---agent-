@@ -59,6 +59,8 @@ const REQUIRED_MODULE_MARKERS = [
   "request gate hardening ok",
   "integrity manifest ok",
   "a11y ok",
+  // CCDPH-FIX(R6-P2-1): 旧默认专用端口 9223 迁移
+  "port migration ok",
 ];
 // 安全用例：必须**真的跑过**才算通过。自我 skip 只记录为「盲区」，绝不再当成满足条件。
 // CCDPH-FIX(R2-P2-11): 原来这两条被塞进 OPTIONAL_MODULE_MARKERS 并只要求

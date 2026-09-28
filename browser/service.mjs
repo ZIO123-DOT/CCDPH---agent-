@@ -4,9 +4,11 @@
 // 工具语义与 Playwright MCP 对齐（browser_*）。
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { probeCdp, probeTabs } from "./detect.mjs";
+import { randomDedicatedPort } from "../server-policies.mjs";
 
 // CCDPH-FIX(NIT-11): 原来的兜底目录是 process.cwd()/.data，而 server.mjs:13 的兜底是
 // <app>/.data —— 在 WORKBENCH_DATA_DIR 未设置（例如 `node server.mjs` 直跑）时，截图会落到
@@ -38,6 +40,26 @@ let connectingPromise = null;
 let connectingCdpEndpoint = "";
 const SCREENSHOT_TOTAL_MAX_BYTES = 256 * 1024 * 1024;
 
+
+// CCDPH-FIX(R6-P3-1): 随机端口做一次空闲探测，避免随机值恰好撞上已被占用的端口（Edge 可能
+// 因此改绑其它端口，导致「持久化端口 ≠ 实际端口」）。探测为 best-effort（存在 TOCTOU），
+// 失败兜底仍返回随机值（至少非固定 9223）。
+function isPortFree(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+export async function findFreeDedicatedPort(attempts = 20) {
+  for (let i = 0; i < attempts; i += 1) {
+    const port = randomDedicatedPort();
+    if (await isPortFree(port)) return port;
+  }
+  return randomDedicatedPort();
+}
 
 let _cachedCdpPort = { port: 0, mtime: 0 };
 export async function cdpEndpointFromSettings(browserSettings) {
@@ -71,6 +93,17 @@ export async function cdpEndpointFromSettings(browserSettings) {
     } catch { }
     return "";
   }
+  // CCDPH-FIX(R6-P3-1): 回读 Edge 实际绑定端口（profile 目录的 DevToolsActivePort）。若随机
+  // 端口被占用导致 Edge 改绑，这里以**实际端口**为准，避免 persisted / CDP / MCP 三者失配。
+  const profileDir =
+    browserSettings.profileDir || path.join(DATA_DIR, "browser-profile");
+  try {
+    const activeFile = path.join(profileDir, "DevToolsActivePort");
+    const text = await fs.promises.readFile(activeFile, "utf8");
+    const actual = Number.parseInt(text.trim().split(/\r?\n/)[0], 10);
+    if (Number.isInteger(actual) && actual > 0)
+      return `http://127.0.0.1:${actual}`;
+  } catch { }
   // CCDPH-FIX(R5-P2-4): 端口未配置（0）时 fail-closed 返回空，不再回退到可预测的 9223。
   const port = Number(browserSettings.dedicatedPort) || 0;
   return port ? `http://127.0.0.1:${port}` : "";

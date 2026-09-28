@@ -1,6 +1,6 @@
 import path from "node:path";
 import { probeCdp } from "../browser/detect.mjs";
-import { randomDedicatedPort } from "../server-policies.mjs";
+import { findFreeDedicatedPort } from "../browser/service.mjs";
 
 export function createIntegrationRoute(deps) {
   const {
@@ -87,8 +87,9 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       const profileDir = next.profileDir || path.join(DATA, "browser-profile");
       next.profileDir = profileDir;
       // CCDPH-FIX(R5-P2-4): 未显式配置端口（0）时随机分配高端口并持久化，不再使用可预测的 9223。
+      // CCDPH-FIX(R6-P3-1): 随机端口做空闲探测（findFreeDedicatedPort），避免撞上已占用端口。
       if (!isValidPort(next.dedicatedPort))
-        next.dedicatedPort = randomDedicatedPort();
+        next.dedicatedPort = await findFreeDedicatedPort();
     }
     await commitBrowserSettings(next);
       const status = await browserStatus(db.settings.browser);
@@ -127,9 +128,10 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
     return await settingsWriteQueue(async () => {
       const profileDir = db.settings.browser.profileDir || path.join(DATA, "browser-profile");
       // CCDPH-FIX(R5-P2-4): 未显式配置端口时随机分配并持久化，与 /api/browser/enable 同口径。
+      // CCDPH-FIX(R6-P3-1): 随机端口做空闲探测（findFreeDedicatedPort）。
       const dedicatedPort = isValidPort(db.settings.browser?.dedicatedPort)
         ? db.settings.browser.dedicatedPort
-        : randomDedicatedPort();
+        : await findFreeDedicatedPort();
       await commitBrowserSettings({
         ...db.settings.browser,
         enabled: true,

@@ -173,6 +173,14 @@ const symlinkGuards = await runFile(
 );
 process.stdout.write(symlinkGuards.stdout);
 process.stderr.write(symlinkGuards.stderr);
+// CCDPH-FIX(R6-P2-1): 旧默认专用端口 9223 迁移的回归护栏。
+const portMigration = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./port-migration.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(portMigration.stdout);
+process.stderr.write(portMigration.stderr);
 const requestGateHardening = await runFile(
   process.execPath,
   [fileURLToPath(new URL("./request-gate-hardening.mjs", import.meta.url))],

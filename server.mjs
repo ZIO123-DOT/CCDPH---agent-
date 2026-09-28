@@ -4390,6 +4390,9 @@ function buildNextSettings(input, current) {
   return next;
 }
 function normalizeLoadedSettings(settings) {
+  // CCDPH-FIX(R6-P2-1): 返回「是否发生了需要写回 state.json 的归一化」。旧默认专用端口 9223
+  // 会被迁移为 0（未配置），从而让启用专用模式时走随机分配 —— 否则老用户永远停在可预测的 9223。
+  let changed = false;
   const allowed = (value, values, fallback) =>
     values.includes(value) ? value : fallback;
   settings.maxTurns = allowed(
@@ -4427,7 +4430,17 @@ function normalizeLoadedSettings(settings) {
     const raw = settings.browser;
     if (typeof raw.enabled === "boolean") browser.enabled = raw.enabled;
     if (["attach", "dedicated"].includes(raw.mode)) browser.mode = raw.mode;
-    if (isValidPort(raw.dedicatedPort)) browser.dedicatedPort = raw.dedicatedPort;
+    // CCDPH-FIX(R6-P2-1): 旧版本默认专用端口固定 9223，且未区分「用户显式设置」与「默认」。
+    // 凡 9223 一律迁移为 0（下次启用专用模式时随机分配），保守但覆盖全部旧默认。
+    if (Number(raw.dedicatedPort) === 9223) {
+      browser.dedicatedPort = 0;
+      changed = true;
+      console.warn(
+        "[ccdph] 检测到旧默认专用浏览器端口 9223，已迁移为未配置（启用专用模式时将随机分配端口）",
+      );
+    } else if (isValidPort(raw.dedicatedPort)) {
+      browser.dedicatedPort = raw.dedicatedPort;
+    }
     if (typeof raw.profileDir === "string")
       browser.profileDir = raw.profileDir.trim().slice(0, 300);
     if (["allow", "omit"].includes(raw.imageResponses))
@@ -4441,6 +4454,7 @@ function normalizeLoadedSettings(settings) {
           .slice(0, 50);
   }
   settings.browser = browser;
+  return changed;
 }
 // CCDPH-FIX(R2-P2-12b): MCP_FILE 已提到模块作用域（见文件上方的 CLAUDE_CONFIG_DIR），
 // 不再在这里写死 os.homedir()。
@@ -5953,7 +5967,8 @@ export async function start() {
     !Array.isArray(db.settings.usageDaily)
       ? db.settings.usageDaily
       : {};
-  normalizeLoadedSettings(db.settings);
+  // CCDPH-FIX(R6-P2-1): 记录设置归一化是否发生（如 9223→0 迁移），随后并入 writeback 判定。
+  const settingsNormalized = normalizeLoadedSettings(db.settings);
   db.settings.engine = "claude";
   if (db.sessions.length > MAX_SESSIONS)
     console.warn(
@@ -6003,7 +6018,7 @@ export async function start() {
   db.settings.defaultPermissionMode = normalizePermissionMode(
     db.settings.defaultPermissionMode,
   );
-  let normalizedSessionState = loadedStateFolded;
+  let normalizedSessionState = loadedStateFolded || settingsNormalized;
   for (let sessionIndex = 0; sessionIndex < db.sessions.length; sessionIndex += 1) {
     const s = db.sessions[sessionIndex];
     s.engine = "claude";
