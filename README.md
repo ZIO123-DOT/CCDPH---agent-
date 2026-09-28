@@ -11,6 +11,9 @@
 当前发布目标仅支持 Windows x64。源码可在其他平台启动部分网页功能，但终端异常退出恢复依赖
 Windows Toolhelp32 与 `taskkill`；非 Windows 平台会明确记录降级提示，不承诺残留进程自动清理。
 
+> **macOS 移植进行中**：CCDPH 深度绑定 Windows（DPAPI / Edge / taskkill / PowerShell / win32 SDK）。
+> 移植评估与拆分见 [`docs/mac-port.md`](docs/mac-port.md)，当前已完成 Claude 可执行文件解析与浏览器探测的 macOS 分支，凭据加密、终端恢复、自动更新等仍在推进。
+
 1. 点击左侧「＋」添加项目，选择文件夹或粘贴完整路径。
 2. 在底部输入任务并发送。Enter 发送，Shift + Enter 换行；可选择模型、权限模式和新任务环境。
 3. Claude Code 需要确认的操作显示确认卡片；AskUserQuestion 可直接填写回答。
