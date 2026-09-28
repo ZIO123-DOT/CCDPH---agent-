@@ -2,6 +2,26 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.10] - 2026-09-28
+
+> 第八轮修复：落地第七轮独立复审发现的 2×P2 + 2×P3（回读 realpath 校验、显式写端口置标记、去缓存、端口类型归一化）。
+
+### Fixed
+
+- **P2（realpath 包含性校验）** `cdpEndpointFromSettings` 回读 `DevToolsActivePort` 前，在词法校验之外
+  补 `fs.realpathSync` 真实路径校验（与 `resolveDedicatedProfileDir` 同口径），阻断 junction/symlink
+  「词法在 DATA_DIR 内、真实在外部」的绕过。
+- **P2（显式写端口置标记）** `buildNextSettings` 与 `/api/browser/enable`/`launch` 在显式写端口或随机
+  分配时同步置 `dedicatedPortMigrated=true`，修复「新用户显式设 9223 仍被再次迁移」。
+- **P3（去缓存）** 移除回读的 mtime+size 缓存，直接读文件内容（文件极小），避免同长度/同 mtime 粒度
+  命中旧端口值。
+- **P3（端口类型归一化）** `normalizeLoadedSettings` 先 `Number()` 归一化再做迁移/合法性判定，统一
+  字符串端口的处理口径（此前 `"5000"` 被弃为 0 而 `"9223"` 被迁移）。
+
+### 回归护栏
+
+- `api-tests.mjs` 新增 C-09b：显式写端口必须置 `dedicatedPortMigrated` 标记。
+
 ## [0.3.9] - 2026-09-28
 
 > 第七轮修复：把第六轮独立复审发现的 1×P2 + 2×P3（9223 迁移一次性、端口回读加固）落地。
