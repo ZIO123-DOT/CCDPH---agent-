@@ -16,7 +16,7 @@
     },
     {
       "path": "browser/service.mjs",
-      "sha256": "f51ee1b9c4a5a877c044a74e87238e31f313e04b79e38cfc8ede08aa6b6e522a"
+      "sha256": "5d2094b6a6bcdb968281f997b35cd0ffcc4d4626f164b6566a5c5edd3e2e807b"
     },
     {
       "path": "build/icon-512.png",
@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "0d199785a1e9d6d912f460fc4cbdace20481647e9c76060118720d2510cd3dde"
+      "sha256": "0d5075e7fc02029b9fe83a27f9d17203911b58f14b0420a33134640276d8aa58"
     },
     {
       "path": "package.json",
-      "sha256": "eb0f83a4937e0c460609fb5c33d5026b67334cccc7950930d768b20eb4cc8710"
+      "sha256": "b6d21ca4bf433b981f851298912b64be27adddc8f1dd98a15fbd5ea4e35a1749"
     },
     {
       "path": "preload-approval.cjs",
@@ -752,7 +752,7 @@
     },
     {
       "path": "routes/integration.mjs",
-      "sha256": "13329baaa6c9e3be7b0147c998c6a4c860b045378deb6c107a8df7bf6a476704"
+      "sha256": "686f4beae6fa5bc864a265c20a7ddef42d23606be82a7f0c63aa1e9c4b528738"
     },
     {
       "path": "routes/workspace-io.mjs",
@@ -772,7 +772,7 @@
     },
     {
       "path": "server.mjs",
-      "sha256": "918c5f5f423c0c57f9ab414ee13516fe76a22e04a6e622e66e6d46c6bcfccbaa"
+      "sha256": "8a736d6bfc454efe6272d717fee749c5593a8f994d910bb2c0e90f517c1075f1"
     },
     {
       "path": "state-load-worker.mjs",
