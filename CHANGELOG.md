@@ -2,6 +2,21 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.3.15] - 2026-09-28
+
+> 四链独立复审后的安全加固项（P1/P2/P3）。
+
+### Security
+
+- **专用浏览器默认禁用（P1）**：专用授权 Browser 使用无鉴权的回环 CDP 调试端口（Chromium 原生无鉴权能力），启用/启动前新增 `dedicatedAck` 风险确认闸——未经界面显式确认一律 400 拒绝，避免默认或被诱导启用专用模式暴露登录态。
+- **浏览器 SSRF 默认阻断（P1）**：auto 权限模式下浏览器 MCP 默认并入回环与云元数据端点（`localhost`/`127.0.0.1`/`[::1]`/`169.254.169.254` 等）阻断，防止提示注入诱导导航至本机/元数据服务；用户显式 `allowOrigins` 可覆盖。
+
+### Fixed
+
+- **claudeExecutable 可执行名白名单（P2）**：`claudeVersionOf` 只允许 `claude`/`claude.exe`/`claude.cmd`/`claude.bat`，防止把 `claudeExecutable` 指向任意 `.exe` 被以 `--version` 执行。
+- **worktree 分支名选项注入（P2）**：`git worktree add` 加 `--` 分隔位置参数，并拒绝 `-` 开头分支名（`--force` 等会被解析为 git 选项）。
+- **开发模式令牌打印收口（P3）**：网页开发版启动令牌仅在交互终端（TTY）打印，stdout 被重定向/CI 时不打印；`CCDPH_DEV_PRINT_TOKEN=1` 可强制打印（测试与脚本化启动据此取令牌）。
+
 ## [0.3.14] - 2026-09-28
 
 > 四链独立复审后的加固项（NIT）。
