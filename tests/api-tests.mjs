@@ -507,6 +507,12 @@ try {
     assert.notEqual(r.json.browser.dedicatedPort, 80, "特权端口不得被接受");
     assert.equal(r.json.browser.dedicatedPort, beforePort, "非法端口应保持原值");
   });
+  await test("C-09b", "P2", "POST /api/settings 显式写端口会置 dedicatedPortMigrated（避免 9223 被再次迁移）", async () => {
+    const r = await api("POST", "/api/settings", { body: { browser: { dedicatedPort: 30000 } } });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.browser.dedicatedPort, 30000, "合法端口应被接受");
+    assert.equal(r.json.browser.dedicatedPortMigrated, true, "显式写端口必须置迁移标记");
+  });
   await test("C-10", "P1", "POST /api/browser/enable 特权端口 → 400 且不落盘 enabled（事务原子性）", async () => {
     const r = await api("POST", "/api/browser/enable", { body: { mode: "attach", dedicatedPort: 80 } });
     assert.equal(r.status, 400);

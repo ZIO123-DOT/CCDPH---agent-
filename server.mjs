@@ -4317,7 +4317,12 @@ function buildNextSettings(input, current) {
     if (["attach", "dedicated"].includes(b.mode)) cur.mode = b.mode;
     if (typeof b.cdpEndpoint === "string")
       cur.cdpEndpoint = b.cdpEndpoint.trim().slice(0, 300);
-    if (isValidPort(b.dedicatedPort)) cur.dedicatedPort = b.dedicatedPort;
+    // CCDPH-FIX(R8-P2-2): 用户显式写端口即视为「已做端口决策」，同步置标记——否则新用户
+    // 显式设 9223 后（标记仍为 false）会在下次启动被 normalizeLoadedSettings 再次迁移为 0。
+    if (isValidPort(b.dedicatedPort)) {
+      cur.dedicatedPort = b.dedicatedPort;
+      cur.dedicatedPortMigrated = true;
+    }
     if (typeof b.profileDir === "string")
       cur.profileDir = b.profileDir.trim().slice(0, 300);
     for (const key of ["allowOrigins", "blockOrigins"])
@@ -4438,15 +4443,18 @@ function normalizeLoadedSettings(settings) {
     // CCDPH-FIX(R6-P2-1/R7-P2-1): 旧默认专用端口 9223 **只迁一次**。旧版本未区分「用户显式设置」
     // 与「默认」，故用 dedicatedPortMigrated 标记区分：未迁过的 9223 视为旧默认 → 迁移为 0；
     // 已迁过之后用户再显式设 9223 → 保留（否则显式 9223 会在每次重启被静默回退）。
-    if (Number(raw.dedicatedPort) === 9223 && !browser.dedicatedPortMigrated) {
+    // CCDPH-FIX(R8-P3-2): 先 Number() 归一化，迁移判定与合法性判定用同一数值——否则被篡改的
+    // 字符串 "5000" 会被 isValidPort（要求整数）弃为 0，而 "9223" 因 Number() 转换被迁移，口径不一致。
+    const rawPort = Number(raw.dedicatedPort);
+    if (rawPort === 9223 && !browser.dedicatedPortMigrated) {
       browser.dedicatedPort = 0;
       browser.dedicatedPortMigrated = true;
       changed = true;
       console.warn(
         "[ccdph] 检测到旧默认专用浏览器端口 9223，已迁移为未配置（启用专用模式时将随机分配端口）",
       );
-    } else if (isValidPort(raw.dedicatedPort)) {
-      browser.dedicatedPort = raw.dedicatedPort;
+    } else if (isValidPort(rawPort)) {
+      browser.dedicatedPort = rawPort;
     }
     if (typeof raw.profileDir === "string")
       browser.profileDir = raw.profileDir.trim().slice(0, 300);

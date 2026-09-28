@@ -68,9 +68,6 @@ export async function findFreeDedicatedPort(attempts = 20) {
 }
 
 let _cachedCdpPort = { port: 0, mtime: 0 };
-// CCDPH-FIX(R7-P3-2): 专用模式回读实际端口的缓存（mtime+size + profileDir 键），与 attach
-// 分支的 _cachedCdpPort 同口径，避免每次 status 轮询都 readFile。
-let _cachedDedicatedPort = { profileDir: "", port: 0, mtime: 0, size: 0 };
 export async function cdpEndpointFromSettings(browserSettings) {
   if (!browserSettings || !browserSettings.enabled) return "";
   if ((browserSettings.mode || "attach") === "attach") {
@@ -112,34 +109,36 @@ export async function cdpEndpointFromSettings(browserSettings) {
   const dataRoot = path.resolve(DATA_DIR);
   const resolvedProfile = path.resolve(profileDir);
   const relProfile = path.relative(dataRoot, resolvedProfile);
-  const profileInside =
+  const lexicallyInside =
     Boolean(relProfile) &&
     relProfile !== ".." &&
     !relProfile.startsWith(`..${path.sep}`) &&
     !path.isAbsolute(relProfile);
+  // CCDPH-FIX(R8-P2-1): 词法校验之外再做 realpath 校验（与 resolveDedicatedProfileDir 的
+  // :499-501 同口径）。junction/symlink 词法在 DATA_DIR 内、真实落点在外部时，词法校验会漏放；
+  // realpath 失败（目录不存在）也 fail-closed 跳过回读。
+  let profileInside = false;
+  if (lexicallyInside) {
+    try {
+      const realDataRoot = fs.realpathSync(dataRoot);
+      const realResolved = fs.realpathSync(resolvedProfile);
+      const realRelative = path.relative(realDataRoot, realResolved);
+      profileInside =
+        Boolean(realRelative) &&
+        realRelative !== ".." &&
+        !realRelative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(realRelative);
+    } catch { }
+  }
   if (profileInside) {
     try {
+      // CCDPH-FIX(R8-P3-1): 文件极小（约 10 字节），直接读内容、不做 mtime+size 缓存——
+      // 避免同长度/同 mtime 粒度重写时命中旧端口值。
       const activeFile = path.join(resolvedProfile, "DevToolsActivePort");
-      // CCDPH-FIX(R7-P3-2): mtime+size+profileDir 缓存，文件未变时直接用缓存端口。
-      const st = await fs.promises.stat(activeFile);
-      if (
-        _cachedDedicatedPort.profileDir === resolvedProfile &&
-        st.mtimeMs === _cachedDedicatedPort.mtime &&
-        st.size === _cachedDedicatedPort.size &&
-        _cachedDedicatedPort.port > 0
-      )
-        return `http://127.0.0.1:${_cachedDedicatedPort.port}`;
       const text = await fs.promises.readFile(activeFile, "utf8");
       const actual = Number.parseInt(text.trim().split(/\r?\n/)[0], 10);
-      if (Number.isInteger(actual) && actual > 0) {
-        _cachedDedicatedPort = {
-          profileDir: resolvedProfile,
-          port: actual,
-          mtime: st.mtimeMs,
-          size: st.size,
-        };
+      if (Number.isInteger(actual) && actual > 0)
         return `http://127.0.0.1:${actual}`;
-      }
     } catch { }
   }
   // CCDPH-FIX(R5-P2-4): 端口未配置（0）时 fail-closed 返回空，不再回退到可预测的 9223。

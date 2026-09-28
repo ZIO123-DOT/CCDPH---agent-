@@ -77,6 +77,8 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       if (!isValidPort(input.dedicatedPort))
         throw new Error("端口需在 1024-65535 之间");
       next.dedicatedPort = input.dedicatedPort;
+      // CCDPH-FIX(R8-P2-2): 显式写端口即视为「已做端口决策」，置标记避免 9223 被再次迁移。
+      next.dedicatedPortMigrated = true;
     }
     if (Array.isArray(input.blockOrigins))
       next.blockOrigins = input.blockOrigins
@@ -88,8 +90,11 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       next.profileDir = profileDir;
       // CCDPH-FIX(R5-P2-4): 未显式配置端口（0）时随机分配高端口并持久化，不再使用可预测的 9223。
       // CCDPH-FIX(R6-P3-1): 随机端口做空闲探测（findFreeDedicatedPort），避免撞上已占用端口。
-      if (!isValidPort(next.dedicatedPort))
+      if (!isValidPort(next.dedicatedPort)) {
         next.dedicatedPort = await findFreeDedicatedPort();
+        // CCDPH-FIX(R8-P2-2): 随机分配同样是一次「端口决策」，置标记。
+        next.dedicatedPortMigrated = true;
+      }
     }
     await commitBrowserSettings(next);
       const status = await browserStatus(db.settings.browser);
@@ -138,6 +143,8 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
         mode: "dedicated",
         profileDir,
         dedicatedPort,
+        // CCDPH-FIX(R8-P2-2): 专用模式启动同样是一次「端口决策」，置标记。
+        dedicatedPortMigrated: true,
       });
       return json(res, { ok: true, hint: "专用授权浏览器已启动，请在其中登录你需要的网站（登录态长期保留）" });
     });
