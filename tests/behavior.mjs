@@ -60,6 +60,7 @@ import {
   buildPlaywrightMcpConfig,
 } from "../browser/mcp-config.mjs";
 import { terminalRegistryPlatformStatus } from "../terminal-registry.mjs";
+import { createMacKeychainProtector } from "../credential-protector.mjs";
 
 const sessions = [
   { id: "live-old", archived: false, updatedAt: 1 },
@@ -714,6 +715,25 @@ try {
   );
 } finally {
   await rm(temp, { recursive: true, force: true });
+}
+
+// macOS Keychain 保护器（注入假 safeStorage 验证往返 + 降级）
+{
+  const fakeSafeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (plaintext) => Buffer.from("enc:" + plaintext, "utf8"),
+    decryptString: (buffer) => {
+      const s = buffer.toString("utf8");
+      if (!s.startsWith("enc:")) throw new Error("invalid payload");
+      return s.slice(4);
+    },
+  };
+  const mac = createMacKeychainProtector(fakeSafeStorage);
+  assert.equal(mac.name, "macos-keychain");
+  const payload = await mac.encrypt("sk-macos-secret");
+  assert(!payload.includes("sk-macos-secret"), "密文不得包含明文");
+  assert.equal(await mac.decrypt(payload), "sk-macos-secret", "解密往返一致");
+  assert.equal(createMacKeychainProtector(null), null, "无 safeStorage 应降级为 null");
 }
 
 console.log("behavior ok: session safety, JSON BOM, redaction, bounded I/O, rate limits");

@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
+
+// 用于在 Electron 主进程里取到 safeStorage（Keychain）。纯 Node（npm start 开发态）下
+// require("electron") 要么解析失败、要么返回的是 electron 二进制路径字符串（无 safeStorage），
+// 两者都会在下方被识别为「无安全存储」而安全降级。
+const require = createRequire(import.meta.url);
 
 const POWERSHELL_EXE = path.join(
   process.env.SystemRoot || "C:\\Windows",
@@ -86,7 +92,37 @@ function runWindowsDpapi(script, input, maxBytes) {
   });
 }
 
+// macOS：Electron safeStorage（Keychain）。仅在 Electron 主进程内可用；纯 Node（npm start）
+// 下 require("electron") 会失败或返回路径字符串 → 返回 null（会话级降级）。
+function resolveElectronSafeStorage() {
+  try {
+    const electron = require("electron");
+    const safeStorage = electron && electron.safeStorage;
+    return safeStorage &&
+      typeof safeStorage.isEncryptionAvailable === "function" &&
+      safeStorage.isEncryptionAvailable()
+      ? safeStorage
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createMacKeychainProtector(
+  safeStorage = resolveElectronSafeStorage(),
+) {
+  if (!safeStorage) return null;
+  return {
+    name: "macos-keychain",
+    encrypt: async (plaintext) =>
+      safeStorage.encryptString(String(plaintext)).toString("base64"),
+    decrypt: async (payload) =>
+      safeStorage.decryptString(Buffer.from(String(payload), "base64")),
+  };
+}
+
 export function createDefaultCredentialProtector(maxBytes = 1024 * 1024) {
+  if (process.platform === "darwin") return createMacKeychainProtector();
   if (process.platform !== "win32") return null;
   return {
     name: "windows-dpapi",

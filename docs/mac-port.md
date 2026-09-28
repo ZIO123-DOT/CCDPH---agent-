@@ -26,12 +26,10 @@
 - **已就绪**：`claudeVersionOf` 的可执行名白名单已含 `claude`（Unix 二进制名），`findClaude` 已含 `~/.local/bin/claude` 候选。
 - **风险点**：`resolveNativeClaudeExecutable` 里 `claude.exe` 特判（2146 行）需加 darwin 分支。
 
-### 2. 凭据加密（`credential-protector.mjs`）
+### 2. 凭据加密（`credential-protector.mjs`）—— ✅ 已实现（2026-09-28）
 - **Windows 现状**：以**独立子进程**跑 `powershell.exe -Command`（`windows-dpapi`），规避主进程直接持有 DPAPI 句柄；配 `taskkill.exe` 超时收拾。
-- **mac 障碍**：Electron `safeStorage`（Keychain 后端）**只能在 Electron 主进程内调用**，无法在纯 Node 子进程用；`security` CLI 需用户级 Keychain 访问。
-- **方案 A（推荐）**：主进程直接用 `safeStorage`（与 Git 控制台同款，已跨平台），去掉 DPAPI 子进程；迁移旧 DPAPI 密文仅 Windows 需要。
-- **方案 B**：保留子进程，改用 `security` CLI（`security add-generic-password -a <acct> -s <service> -w <secret> -U`），跨平台性差、交互多，不推荐。
-- **降级**：当前非 win32 已返回 `null`（会话级，不落盘），属安全降级；要持久化必须做方案 A。
+- **mac 障碍**：Electron `safeStorage`（Keychain 后端）**只能在 Electron 主进程内调用**，无法在纯 Node 子进程用。
+- **mac 实现**：新增 `createMacKeychainProtector()`，在 Electron 主进程内 `require("electron").safeStorage`（Keychain）做加解密，`name: "macos-keychain"`，密文仍存 `api-auth.json`（version 2 格式）；纯 Node（`npm start`）下 `require("electron")` 失败 → 返回 `null` 会话级降级。单测见 `tests/behavior.mjs`（注入假 safeStorage 验证往返）。**待真实 Mac 上验证 Keychain 加解密**。
 
 ### 3. 终端进程恢复（`terminal-registry.mjs`）
 - **Windows 现状**：Toolhelp32 快照 + `taskkill.exe /T /F`（进程树强杀），PID 复用前重新核验进程名/启动时间。
