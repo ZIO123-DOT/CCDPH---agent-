@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "e8dfb181061b65ac25fdc271a079592b4cdf7e5bfe40198d85c29fe0c4331450"
+      "sha256": "96500a9f3146b0d4df609cfae1e71250a46d283917e561923d277a2621f06504"
     },
     {
       "path": "package.json",
-      "sha256": "356e9a77c04e27401c100f80763733a2d26ab47aeb05affe60e9c0dc20952ee9"
+      "sha256": "a70db979e00ab6b03e838cbf66e7c0e2273361256a0eb7d3e1682dd8a5af73ce"
     },
     {
       "path": "preload-approval.cjs",
@@ -772,7 +772,7 @@
     },
     {
       "path": "server.mjs",
-      "sha256": "5d62491ae9b27ecf2b1e97d59387380b7f51c25e8ceb9e4a8884c972f41360d4"
+      "sha256": "8e78e3ead0d04c5937aec6a13f1374bc59a9dd5bcca2641c5b67d88443e94a95"
     },
     {
       "path": "state-load-worker.mjs",
