@@ -41,7 +41,9 @@ function harness({ resolveTarget = resolveAuthorized, failAdd = false } = {}) {
       if (args[0] === "rev-parse" && String(args.at(-1)).startsWith("refs/heads/"))
         throw new Error("missing branch");
       if (args[0] === "worktree" && args[1] === "add") {
-        const target = args[2] === "-b" ? args[4] : args[2];
+        // 目标路径是 `--` 分隔符后的第一个位置参数（新增 `--` 后不再按 -b 是否出现来定位）
+        const sep = args.indexOf("--");
+        const target = sep >= 0 ? args[sep + 1] : (args[2] === "-b" ? args[4] : args[2]);
         worktreeTarget = target;
         await writeFile(path.join(target, ".git"), "gitdir: test", "utf8");
         if (failAdd) throw new Error("simulated partial git failure");
@@ -69,6 +71,11 @@ try {
   assert.equal(created.ok, true);
   assert.equal(path.dirname(created.path), await realpath(base));
   assert.match(path.basename(created.path), /^feature-safe-worktree-[0-9a-f]{8}$/);
+  // worktree add 必须带 `--` 分隔符，防止分支名/基线被解析为 git 选项
+  const addCall = normal.gitCalls.find((c) => c[0] === "worktree" && c[1] === "add");
+  assert.ok(addCall && addCall.includes("--"), "worktree add 缺 `--` 分隔符");
+  // 以 `-` 开头的分支名（如 --force）在进入 git 前就被拒绝
+  await assert.rejects(create(normal.route, "--force"), /分支名不能以 - 开头/);
 
   let checks = 0;
   const raced = harness({

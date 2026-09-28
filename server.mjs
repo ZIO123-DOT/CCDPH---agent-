@@ -156,6 +156,9 @@ const DEFAULT_SETTINGS = {
     // CCDPH-FIX(R7-P2-1): 旧默认 9223 的一次性迁移标记。为 true 表示「已迁过一次」，此后
     // 用户显式设置的 9223 不再被再次迁移（否则显式 9223 会在每次重启被静默回退）。
     dedicatedPortMigrated: false,
+    // P1-3: 专用浏览器使用无鉴权的回环 CDP 调试端口，启用前必须显式确认风险
+    //（同机同用户进程可经该端口读取登录态/执行页面 JS）。默认 false = 未确认，禁止启用专用模式。
+    dedicatedAck: false,
   },
 };
 // CCDPH-FIX(A10-17): 深度上限改为「相对」语义 —— 只约束**单条事件 / 单条消息内容自身**的
@@ -1154,6 +1157,13 @@ async function findClaude() {
 }
 async function claudeVersionOf(candidatePath) {
   const options = { windowsHide: true, timeout: 20000 };
+  // P2：约束可执行文件名——只允许 Claude Code 的标准可执行名，防止把 claudeExecutable
+  // 指向任意 .exe（calc.exe / 恶意程序）后被 findClaude 以 --version 执行。
+  const execBase = path.basename(candidatePath).toLowerCase();
+  if (!["claude", "claude.exe", "claude.cmd", "claude.bat"].includes(execBase))
+    throw new Error(
+      "Claude 可执行文件名不合法（仅允许 claude / claude.exe / claude.cmd / claude.bat）",
+    );
   // CCDPH-FIX(CMD-4): .cmd/.bat 无法被 execFile 直接执行（Node 会 EINVAL），确实需要
   // 一个 shell；但**绝不能**把路径插进命令串。原实现是：
   //     exec(`"${candidatePath}" --version`, { shell: true })
@@ -2799,7 +2809,7 @@ async function runTurn(s, prompt, model, permissionMode, images = []) {
     // 浏览器能力：按设置运行时注入 Playwright MCP（不写用户全局配置，见设计文档 §8）
     const browserMcp =
       browserMcpEnabled(db.settings.browser)
-        ? { mcpServers: { browser: buildPlaywrightMcpConfig(db.settings.browser) } }
+        ? { mcpServers: { browser: buildPlaywrightMcpConfig(db.settings.browser, permissionMode) } }
         : {};
     // auto 模式不会调用宿主审批回调。浏览器开启时，禁止两个可执行任意
     // 页面 JavaScript / Playwright 代码的 MCP 工具，防止页面提示注入在无审批下放大。
@@ -4445,6 +4455,8 @@ function normalizeLoadedSettings(settings) {
     if (["attach", "dedicated"].includes(raw.mode)) browser.mode = raw.mode;
     // CCDPH-FIX(R7-P2-1): 读入迁移标记（旧 state.json 无此字段 → 保持 false）。
     if (raw.dedicatedPortMigrated === true) browser.dedicatedPortMigrated = true;
+    // P1-3: 风险确认标记随设置持久化；仅在显式为 true 时保留（默认 false）。
+    if (raw.dedicatedAck === true) browser.dedicatedAck = true;
     // CCDPH-FIX(R6-P2-1/R7-P2-1): 旧默认专用端口 9223 **只迁一次**。旧版本未区分「用户显式设置」
     // 与「默认」，故用 dedicatedPortMigrated 标记区分：未迁过的 9223 视为旧默认 → 迁移为 0；
     // 已迁过之后用户再显式设 9223 → 保留（否则显式 9223 会在每次重启被静默回退）。
@@ -6257,9 +6269,17 @@ export async function start() {
     );
   console.log(`CCDPH: ${origin}`);
   // 网页开发版（npm start）没有别的途径拿到本次启动的令牌：桌面版由 desktop.cjs 从内存
-  // 取值，这里只在非桌面模式下把完整入口打进本进程终端（不落盘、不写进任何文件）。
-  if (process.env.WORKBENCH_DESKTOP !== "1")
-    console.log(`CCDPH: 本次启动令牌（仅本进程终端可见，不写入磁盘）: ${url}`);
+  // 取值。为收敛「令牌进 stdout 被重定向/CI 日志留存」的泄漏面，只在交互式终端（TTY）
+  // 打印完整入口；stdout 被管道/重定向时默认不打印，除非显式设置 CCDPH_DEV_PRINT_TOKEN=1
+  //（测试与脚本化启动据此取令牌）。令牌仍不落盘、不写进任何文件。
+  if (process.env.WORKBENCH_DESKTOP !== "1") {
+    if (process.env.CCDPH_DEV_PRINT_TOKEN === "1" || Boolean(process.stdout.isTTY))
+      console.log(`CCDPH: 本次启动令牌（仅本进程终端可见，不写入磁盘）: ${url}`);
+    else
+      console.log(
+        `CCDPH: 开发模式启动。stdout 非交互终端，令牌未打印；设置 CCDPH_DEV_PRINT_TOKEN=1 后重启可强制打印。`,
+      );
+  }
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;

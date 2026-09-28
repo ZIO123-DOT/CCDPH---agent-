@@ -49,6 +49,7 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       engine: "claude",
       enabled: Boolean(db.settings.browser?.enabled),
       mode: db.settings.browser?.mode || "attach",
+      dedicatedAck: Boolean(db.settings.browser?.dedicatedAck),
       connection: {
         connected: info.connected,
         browser: info.browser,
@@ -65,6 +66,13 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
     const input = requireObject(await body(req));
     return await settingsWriteQueue(async () => {
       const mode = ["attach", "dedicated"].includes(input.mode) ? input.mode : "attach";
+    // P1-3：专用浏览器使用无鉴权的回环 CDP 调试端口，启用前必须显式确认风险（ack 可在本次
+    // 请求携带，或此前已持久化）。未经确认一律拒绝，避免默认/被诱导启用专用模式。
+    const acked = input.dedicatedAck === true || Boolean(db.settings.browser?.dedicatedAck);
+    if (mode === "dedicated" && !acked)
+      throw new Error(
+        "启用专用浏览器前需确认安全风险：同一台电脑上的其它进程可连接其无鉴权调试端口（可读取登录态）。请在界面确认后重试。",
+      );
     // CCDPH-FIX(MED-2): 先整体校验、再一次性赋值。原实现一进门就写
     // db.settings.browser.enabled = true / mode = mode，之后才校验端口 ——
     // POST {mode:"dedicated", dedicatedPort:80} 回 400「端口需在 1024-65535 之间」，
@@ -72,6 +80,7 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
     // 设置保存或浏览器调用都会把这个「被拒绝的意图」写进 state.json，浏览器徽标亮起、
     // browserMcpEnabled() 还会开始向新的 Claude 轮次注入 Playwright MCP。
     const next = { ...(db.settings.browser || {}), enabled: true, mode };
+    if (input.dedicatedAck === true) next.dedicatedAck = true;
     if (input.dedicatedPort !== undefined) {
       // CCDPH-FIX: 与 /api/settings 用同一条端口校验，杜绝把端口设为 80 这类特权端口
       if (!isValidPort(input.dedicatedPort))
@@ -131,6 +140,12 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
       });
     }
     return await settingsWriteQueue(async () => {
+      // P1-3：专用浏览器启用前必须已确认风险（dedicatedAck 持久化于设置；未经确认拒绝启动）。
+      const acked = input.dedicatedAck === true || Boolean(db.settings.browser?.dedicatedAck);
+      if (!acked)
+        throw new Error(
+          "启动专用浏览器前需确认安全风险：同一台电脑上的其它进程可连接其无鉴权调试端口（可读取登录态）。请在界面确认后重试。",
+        );
       const profileDir = db.settings.browser.profileDir || path.join(DATA, "browser-profile");
       // CCDPH-FIX(R5-P2-4): 未显式配置端口时随机分配并持久化，与 /api/browser/enable 同口径。
       // CCDPH-FIX(R6-P3-1): 随机端口做空闲探测（findFreeDedicatedPort）。
@@ -145,6 +160,8 @@ return async function routeIntegrationDomain(req, res, url, pathname) {
         dedicatedPort,
         // CCDPH-FIX(R8-P2-2): 专用模式启动同样是一次「端口决策」，置标记。
         dedicatedPortMigrated: true,
+        // P1-3：经启动入口确认的也持久化风险确认标记，避免下次启动/切模式再被要求确认。
+        ...(input.dedicatedAck === true ? { dedicatedAck: true } : {}),
       });
       return json(res, { ok: true, hint: "专用授权浏览器已启动，请在其中登录你需要的网站（登录态长期保留）" });
     });

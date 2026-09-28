@@ -16,6 +16,7 @@ try {
         WORKBENCH_DATA_DIR: dataDir,
         WORKBENCH_PORT: String(port),
         WORKBENCH_DESKTOP: "0",
+        CCDPH_DEV_PRINT_TOKEN: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,

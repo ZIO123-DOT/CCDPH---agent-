@@ -3147,6 +3147,8 @@ async function renderBrowserPanel() {
     const enabled = Boolean(status.enabled);
     $("#browser-enabled").checked = enabled;
     $("#browser-mode").value = status.mode || "attach";
+    // P1-3：跟踪专用模式风险是否已确认（切换/启动专用浏览器时据此决定是否弹确认）
+    browserDedicatedAcked = Boolean(status.dedicatedAck);
     $("#browser-mode-row").classList.toggle("hidden", !enabled);
     // 回填「允许/阻止域名」，容忍字段不存在
     const browserSettings = state.settings.browser || {};
@@ -3219,6 +3221,10 @@ async function renderBrowserPanel() {
     $("#browser-status").innerHTML = `<span class="readonly-status warn">加载失败：${escapeHtml(String(err.message || err).slice(0, 120))}</span>`;
   }
 }
+// P1-3：专用浏览器风险确认状态（renderBrowserPanel 从 status.dedicatedAck 回填）
+let browserDedicatedAcked = false;
+const DEDICATED_RISK_WARNING =
+  "专用浏览器会启动一个带无鉴权调试端口的独立 Edge 窗口；同一台电脑上的其它进程可连接该端口读取登录态或执行页面脚本。";
 $("#browser-enabled").onchange = action(async () => {
   const enabled = $("#browser-enabled").checked;
   await api("browser/" + (enabled ? "enable" : "disable"), {
@@ -3228,14 +3234,41 @@ $("#browser-enabled").onchange = action(async () => {
   await renderBrowserPanel();
 });
 $("#browser-mode").onchange = action(async () => {
-  await api("browser/enable", { mode: $("#browser-mode").value });
+  const mode = $("#browser-mode").value;
+  if (mode === "dedicated" && !browserDedicatedAcked) {
+    const ok = await confirmAction(
+      DEDICATED_RISK_WARNING,
+      "启用专用浏览器的安全提示",
+      "我已了解风险，确认启用",
+    );
+    if (!ok) {
+      $("#browser-mode").value = "attach";
+      return;
+    }
+    await api("browser/enable", { mode, dedicatedAck: true });
+    browserDedicatedAcked = true;
+  } else {
+    await api("browser/enable", { mode });
+  }
   toast("连接模式已更新");
   await renderBrowserPanel();
 });
 $("#browser-allow-origins").onchange = action(saveSettings);
 $("#browser-block-origins").onchange = action(saveSettings);
 $("#browser-launch").onclick = action(async () => {
-  const result = await api("browser/launch", { mode: $("#browser-mode").value });
+  const mode = $("#browser-mode").value;
+  if (mode === "dedicated" && !browserDedicatedAcked) {
+    const ok = await confirmAction(
+      DEDICATED_RISK_WARNING,
+      "启动专用浏览器的安全提示",
+      "我已了解风险，确认启动",
+    );
+    if (!ok) return;
+  }
+  const result = await api("browser/launch", {
+    mode,
+    ...(mode === "dedicated" ? { dedicatedAck: true } : {}),
+  });
   if (result.hint) toast(result.hint);
   await renderBrowserPanel();
 });

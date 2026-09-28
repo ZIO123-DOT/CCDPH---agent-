@@ -331,6 +331,31 @@ assert.equal(typeof mcpConfig.command, "string");
 assert(mcpConfig.args.includes("--cdp-endpoint=msedge"));
 assert(mcpConfig.args.includes("--allowed-origins"));
 
+// P1-4：auto 模式默认并入 SSRF 阻断（回环 + 云元数据）
+{
+  const autoCfg = buildPlaywrightMcpConfig(
+    { enabled: true, mode: "dedicated", dedicatedPort: 9223, allowOrigins: [], blockOrigins: [] },
+    "auto",
+  );
+  const bi = autoCfg.args.indexOf("--blocked-origins");
+  assert(bi >= 0, "auto 模式应带 --blocked-origins");
+  const blockedValue = autoCfg.args[bi + 1];
+  for (const host of ["localhost", "127.0.0.1", "169.254.169.254"])
+    assert(blockedValue.split(";").includes(host), `默认阻断应含 ${host}`);
+  // 用户显式 allow 的主机不重复默认阻断
+  const allowCfg = buildPlaywrightMcpConfig(
+    { enabled: true, mode: "dedicated", dedicatedPort: 9223, allowOrigins: ["localhost"], blockOrigins: [] },
+    "auto",
+  );
+  const abi = allowCfg.args.indexOf("--blocked-origins");
+  assert(!allowCfg.args[abi + 1].split(";").includes("localhost"), "显式 allow 的主机不应被默认阻断");
+  // 非 auto 模式不带默认阻断
+  const defaultCfg = buildPlaywrightMcpConfig(
+    { enabled: true, mode: "dedicated", dedicatedPort: 9223, allowOrigins: [], blockOrigins: [] },
+  );
+  assert(!defaultCfg.args.includes("--blocked-origins"), "非 auto 模式不应带默认阻断");
+}
+
 assert.deepEqual(gitChangesFailure({ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }), {
   files: [],
   additions: 0,

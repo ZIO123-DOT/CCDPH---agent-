@@ -25,7 +25,23 @@ function getMcpEntry() {
   return cachedMcpEntry;
 }
 
-export function buildPlaywrightMcpConfig(browser) {
+// P1-4：auto 模式下的 SSRF 默认阻断。@playwright/mcp 的 --blocked-origins 会为每个
+// 匹配项安装 context.route(abort)，可拦截对这些主机的导航/子资源请求。file:// 无需在此
+// 列出——未传 --allow-unrestricted-file-access 时 MCP 默认就阻断 file:// 导航。
+// 仅覆盖回环与云元数据端点（169.254.169.254 等）。用户显式写入 allowOrigins 的主机
+// 优先于默认阻断（见 buildPlaywrightMcpConfig 内的合并逻辑），可自行放行。
+const SSRF_DEFAULT_BLOCKED = [
+  "localhost",
+  "127.0.0.1",
+  "0.0.0.0",
+  "[::1]",
+  "169.254.169.254", // AWS / GCP / 通用链路本地云元数据
+  "169.254.170.2", // AWS ECS 任务元数据
+  "100.100.100.200", // 阿里云元数据
+  "metadata.google.internal", // GCP 元数据
+];
+
+export function buildPlaywrightMcpConfig(browser, permissionMode) {
   const args = [];
   const mode = browser.mode || "attach";
   if (mode === "attach") {
@@ -47,8 +63,14 @@ export function buildPlaywrightMcpConfig(browser) {
   // `error: unknown option '--no-usage-statistics'` 退出，导致浏览器 MCP 永远起不来。
   // 已实测确认依赖里不存在该选项，故不再传递（对应的 settings 字段也已移除）。
   const blocked = (browser.blockOrigins || []).filter(Boolean);
-  if (blocked.length) args.push("--blocked-origins", blocked.join(";"));
   const allowed = (browser.allowOrigins || []).filter(Boolean);
+  // auto 模式：默认并入 SSRF 阻断。用户显式 allow 的主机不重复阻断（允许显式放行覆盖默认）。
+  if (permissionMode === "auto") {
+    for (const host of SSRF_DEFAULT_BLOCKED) {
+      if (!blocked.includes(host) && !allowed.includes(host)) blocked.push(host);
+    }
+  }
+  if (blocked.length) args.push("--blocked-origins", blocked.join(";"));
   if (allowed.length) args.push("--allowed-origins", allowed.join(";"));
   // CCDPH-FIX(BR-11): 这里传入的裸域名（example.com）被 @playwright/mcp 展开成
   // `*://example.com/**` —— 只匹配该主机本身，子域必须显式写 `*.example.com`。

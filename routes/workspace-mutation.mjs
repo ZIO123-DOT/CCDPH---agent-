@@ -130,6 +130,10 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
     const branch = String(input.branch || "").trim();
     if (!branch || branch.length > 200)
       throw new Error("请填写有效的分支名（200 字以内）");
+    // 拒绝以 `-` 开头的分支名：`git check-ref-format` 并不拒绝 `--force` 这类名字，
+    // 而它随后会被当作 `git worktree add` 的选项解析（如 --force 覆盖既有 worktree）。
+    if (/^-/.test(branch))
+      throw new Error("分支名不能以 - 开头");
     try {
       await git(root, ["check-ref-format", "--branch", branch]);
     } catch {
@@ -177,8 +181,9 @@ return async function routeWorkspaceMutationDomain(req, res, url, pathname) {
       branchExists = true;
     } catch { }
     try {
-      if (branchExists) await git(root, ["worktree", "add", target, branch]);
-      else await git(root, ["worktree", "add", "-b", branch, target, base || "HEAD"]);
+      // `--` 分隔选项与位置参数：防止分支名/基线被解析为 git 选项（--force/--detach 等）
+      if (branchExists) await git(root, ["worktree", "add", "--", target, branch]);
+      else await git(root, ["worktree", "add", "-b", branch, "--", target, base || "HEAD"]);
     } catch (error) {
       await cleanupReservedWorktreeTarget(target, baseDir, "Git 创建失败");
       throw error;

@@ -61,6 +61,7 @@ function startServer() {
         WORKBENCH_DATA_DIR: dataDir,
         WORKBENCH_PORT: String(PORT),
         WORKBENCH_DESKTOP: "0",
+        CCDPH_DEV_PRINT_TOKEN: "1",
         CLAUDE_CONFIG_DIR: claudeDir,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -520,6 +521,14 @@ try {
     const status = await api("GET", "/api/browser/status");
     assert.equal(status.status, 200);
     assert.equal(status.json.enabled, false, "被拒绝的启用意图不得落盘（RK-11 回归）");
+  });
+  await test("C-10b", "P1", "POST /api/browser/enable 专用模式未确认风险 → 400（P1-3 默认禁用）", async () => {
+    const r = await api("POST", "/api/browser/enable", { body: { mode: "dedicated" } });
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /确认安全风险/);
+    const status = await api("GET", "/api/browser/status");
+    assert.equal(status.status, 200);
+    assert.notEqual(status.json.mode, "dedicated", "未确认风险不得切到专用模式");
   });
 
   // =====================================================================
