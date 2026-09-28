@@ -3739,11 +3739,14 @@ async function syncCurrentSessionControls() {
     changes.permissionMode === "auto" &&
     state.activeSession?.permissionMode !== "auto"
   ) {
-    if (
-      !window.confirm(
-        "切换到自动模式后，本轮任务将不再逐项请求工具审批。确认继续吗？",
-      )
-    ) {
+    // CCDPH-FIX(P3-UI-1): 原用原生 window.confirm —— 阻塞、原生样式，与应用其余
+    // 确认框（confirmAction 自定义对话框）不一致。改为同一套异步确认框。
+    const confirmed = await confirmAction(
+      "切换到自动模式后，本轮任务将不再逐项请求工具审批。确认继续吗？",
+      "切换到自动模式",
+      "确认切换",
+    );
+    if (!confirmed) {
       renderHeader();
       return;
     }
@@ -4169,10 +4172,21 @@ function trustedRepoUrl(url) {
 function githubUrl(remote) {
   if (/^https?:\/\//i.test(remote))
     return remote.replace(/\.git$/i, "").replace(/\/$/, "");
+  // CCDPH-FIX(P3-UI-2): SSH 远程此前只认 github.com，GitLab/Bitbucket/Gitee/Codeberg 的
+  // SSH 远程（git@gitlab.com:group/repo.git 等）解析不出 URL，「打开远程仓库」按钮失效。
+  // 与 TRUSTED_REPO_HOSTS 保持一致，覆盖全部已信任托管域名；产出 https URL 后仍会经
+  // trustedRepoUrl 二次校验，安全边界不变。
   const match = remote.match(
-    /^(?:git@|ssh:\/\/git@|git\+ssh:\/\/git@)github\.com[:/](.+)$/i,
+    new RegExp(
+      `^(?:git@|ssh:\\/\\/git@|git\\+ssh:\\/\\/git@)(${TRUSTED_REPO_HOSTS.map((h) =>
+        h.replace(/\./g, "\\."),
+      ).join("|")})[:/](.+)$`,
+      "i",
+    ),
   );
-  return match ? `https://github.com/${match[1].replace(/\.git$/i, "")}` : "";
+  return match
+    ? `https://${match[1].toLowerCase()}/${match[2].replace(/\.git$/i, "")}`
+    : "";
 }
 
 $("#new-session").onclick = action(newSession);

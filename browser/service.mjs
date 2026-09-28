@@ -378,6 +378,35 @@ function captureWindowsCommand(command, args, timeout = 4000, maxBytes = 1024 * 
   });
 }
 
+// CCDPH-FIX(P3-ROBUST): 解析一行 netstat -ano -p tcp 输出。原实现按 split(/\s+/) 的列位置取
+// state 并硬编码 "LISTENING"——非英文 Windows 语言包会把监听状态本地化（如德语 ABHÖREN、
+// 法语 EN ÉCOUTE，后者还带空格导致列整体错位），于是「确认残留专用浏览器身份」在这些系统上
+// 永远判定 unverifiable，残留清理失效（安全方向仍 fail-closed，但清理能力退化）。改为锚定
+// 三个语言无关的不变量：①本地地址是「以 :端口 结尾的 token」；②PID 是「最后一个纯数字
+// token」；③监听态用「对端是通配地址」这一特征判定，不再依赖状态字面量。
+function parseNetstatLine(line) {
+  const tokens = String(line || "").trim().split(/\s+/);
+  if (tokens.length < 4 || tokens[0].toUpperCase() !== "TCP") return null;
+  const ownerPid = tokens[tokens.length - 1];
+  if (!/^\d+$/.test(ownerPid)) return null;
+  let local = "";
+  let foreign = "";
+  for (let i = 1; i < tokens.length - 1; i += 1) {
+    if (/:\d+$/.test(tokens[i])) {
+      local = tokens[i];
+      foreign = tokens[i + 1] || "";
+      break;
+    }
+  }
+  if (!local) return null;
+  return { local, foreign, ownerPid };
+}
+// LISTENING 套接字的对端永远是通配地址，语言无关（Windows netstat 输出 0.0.0.0:0 / [::]:0）。
+const WILDCARD_FOREIGN = new Set(["0.0.0.0:0", "[::]:0", "*:*"]);
+function localPort(localAddr) {
+  return String(localAddr || "").slice(String(localAddr || "").lastIndexOf(":") + 1);
+}
+
 export function matchesDedicatedEdgeIdentity(tasklistOutput, netstatOutput, pid, port) {
   const expectedPid = String(Number(pid));
   const expectedPort = String(Number(port));
@@ -394,17 +423,12 @@ export function matchesDedicatedEdgeIdentity(tasklistOutput, netstatOutput, pid,
   return String(netstatOutput || "")
     .split(/\r?\n/)
     .some((line) => {
-      const columns = line.trim().split(/\s+/);
-      if (columns.length < 5 || columns[0].toUpperCase() !== "TCP") return false;
-      const [protocol, local, , state, ownerPid] = columns;
+      const parsed = parseNetstatLine(line);
+      if (!parsed) return false;
       return (
-        protocol.toUpperCase() === "TCP" &&
-        // CCDPH-FIX(R2-P3-15): 原来用字符串后缀 `local.endsWith(":9223")` 匹配端口。
-        // 改为按最后一个冒号切出**完整端口号**再比较（同时兼容 [::1]:9223 这种 IPv6 写法），
-        // 语义明确、不受地址长度影响。
-        local.slice(local.lastIndexOf(":") + 1) === expectedPort &&
-        state.toUpperCase() === "LISTENING" &&
-        ownerPid === expectedPid
+        parsed.ownerPid === expectedPid &&
+        localPort(parsed.local) === expectedPort &&
+        WILDCARD_FOREIGN.has(parsed.foreign)
       );
     });
 }
@@ -697,15 +721,15 @@ async function debugPortListeningState(port) {
   if (!Number.isInteger(Number(port)) || Number(port) <= 0) return null;
   const netstat = await captureWindowsCommand(NETSTAT_EXE, ["-ano", "-p", "tcp"], 5000);
   if (!netstat.ok) return null;
+  const expectedPort = String(Number(port));
   return String(netstat.out || "")
     .split(/\r?\n/)
     .some((line) => {
-      const columns = line.trim().split(/\s+/);
-      if (columns.length < 5 || columns[0].toUpperCase() !== "TCP") return false;
-      const local = columns[1];
+      const parsed = parseNetstatLine(line);
+      if (!parsed) return false;
       return (
-        local.slice(local.lastIndexOf(":") + 1) === String(Number(port)) &&
-        columns[3].toUpperCase() === "LISTENING"
+        localPort(parsed.local) === expectedPort &&
+        WILDCARD_FOREIGN.has(parsed.foreign)
       );
     });
 }
