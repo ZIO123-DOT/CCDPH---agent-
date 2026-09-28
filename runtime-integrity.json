@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "06b15ce4e5d1af69f196ce0250fadfb529c458c755ac5efb5424029a9ed73e08"
+      "sha256": "e8dfb181061b65ac25fdc271a079592b4cdf7e5bfe40198d85c29fe0c4331450"
     },
     {
       "path": "package.json",
-      "sha256": "def5e7e8b3ccfe385cc42c64acad9afc7287dd3f82d69256b131f7722ebabddc"
+      "sha256": "356e9a77c04e27401c100f80763733a2d26ab47aeb05affe60e9c0dc20952ee9"
     },
     {
       "path": "preload-approval.cjs",
@@ -700,11 +700,11 @@
     },
     {
       "path": "public/api-client.js",
-      "sha256": "7ba32e3ecadc18be84edf709b83ad0518826fbe190bcfb51029caf3c3c776ab2"
+      "sha256": "00d09378492d47275b6975b9c8b0e2ae75470d5217e87e905acf1e429bca7797"
     },
     {
       "path": "public/app.js",
-      "sha256": "82503bb3b6d7df82712f81e99646fdd27187626fb9d6a68d39d46e444168a46e"
+      "sha256": "ce5416305093a7123fde02c1a9be7eba73771f114d5abba77e464953a4b079a3"
     },
     {
       "path": "public/index.html",
