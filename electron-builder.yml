@@ -1,0 +1,83 @@
+appId: com.zio123.ccdph
+productName: CCDPH
+copyright: Copyright (c) 2026 — Apache-2.0
+
+directories:
+  output: release
+  # 安装包图标（构建期资源）单独放 build-resources/，不要打进应用 asar；
+  # 运行时图标仍在 build/ 下（icon.ico / tray.png 等）。
+  buildResources: build-resources
+
+# AppImage 用静态运行时工具链（1.0.3），在 Ubuntu 22.04+/24.04 上无需 libfuse2
+toolsets:
+  appimage: "1.0.3"
+
+# CCDPH 有运行时 npm 依赖（claude-agent-sdk / playwright / xterm 等），需要把
+# node_modules 生产依赖一起打包（electron-builder 会自动排除 devDependencies 与
+# electron / electron-builder 本身）。tests/docs/test-output/备份 等非运行时文件剔除。
+files:
+  - "**/*"
+  - "!tests/**"
+  - "!docs/**"
+  - "!test-output/**"
+  - "!.backup-*/**"
+  - "!**/*.map"
+  - "!CHANGELOG.md"
+  - "!README.md"
+
+# 原生可执行文件 / 动态库必须解包出 asar 才能被执行：
+#   - @anthropic-ai/claude-agent-sdk-*/claude(.exe)（SDK 原生二进制）
+#   - playwright 可能在主进程内加载原生模块
+asarUnpack:
+  - "node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+  - "node_modules/playwright/**"
+  - "node_modules/playwright-core/**"
+  - "node_modules/@playwright/**"
+
+# Windows：NSIS 向导式安装器 + 便携版单文件 exe
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CCDPH
+  artifactName: ccdph-${version}-windows-setup.${ext}
+
+portable:
+  artifactName: ccdph-${version}-windows-portable.${ext}
+
+# macOS：仅 dmg（拖入 Applications 的标准安装包）
+mac:
+  icon: build-resources/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+
+dmg:
+  artifactName: ccdph-${version}-macos-${arch}.${ext}
+
+# Linux：AppImage（双击即用）+ deb（Debian/Ubuntu 安装）
+linux:
+  icon: build-resources/icon.png
+  category: Development
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+
+appImage:
+  artifactName: ccdph-${version}-linux-${arch}.${ext}
+
+deb:
+  artifactName: ccdph-${version}-linux-${arch}.${ext}

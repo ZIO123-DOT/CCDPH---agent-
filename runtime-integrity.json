@@ -4,7 +4,7 @@
   "files": [
     {
       "path": "browser/detect.mjs",
-      "sha256": "e71ad23c9796b9dbb35717c1c1652e7cb87b54e70799e40c8ab62be4d29aa97a"
+      "sha256": "00be3c2c6ba546dfce457861d450272772d6b398b06b09d1051fbec41977de99"
     },
     {
       "path": "browser/lifecycle.mjs",
@@ -16,7 +16,7 @@
     },
     {
       "path": "browser/service.mjs",
-      "sha256": "4233ec4a8ad668c4d75a902816fb3b3ece0d3e036ddca2ca58d21a8503eae47d"
+      "sha256": "596132badf3f847ca1ce6ddf446ae0574f36c102f1d6e81986a4e968aebbe02e"
     },
     {
       "path": "build/icon-512.png",
@@ -32,11 +32,11 @@
     },
     {
       "path": "credential-protector.mjs",
-      "sha256": "1032712f2b9df73f5c06099c8edca250c501165c9d482cecdd4f5a498490fcac"
+      "sha256": "ca7ada9ccc2fc1afe9f92619afbe2417332bfa7aa3551816302b3e5d72042116"
     },
     {
       "path": "desktop.cjs",
-      "sha256": "80ff972bfaa8750e164de351ed87dd336cc1e1ab68d3577f6282dd2dda384750"
+      "sha256": "ff70ab2bdeafbd0ba57001f931e04ece8c9d60a56d868d8676edfa4275b1ed0a"
     },
     {
       "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "1b73a1a016f43a49578d91eec4ba3bc8eabfbeec99793d8171627dc5f8534767"
+      "sha256": "5692662bd92600f573dd8398bb1cf74a4061ccbe183f65787feaaad44b0f507f"
     },
     {
       "path": "package.json",
-      "sha256": "6f061cc4c411899bfa191d4fe376e4ccc873a25276a396405917f1aa30bb2e4a"
+      "sha256": "57af22972d6c61d4ab1a2ec102d5d9da63344eacb26b304f291b642fc920f39a"
     },
     {
       "path": "preload-approval.cjs",
@@ -764,7 +764,7 @@
     },
     {
       "path": "scripts/generate-runtime-integrity.mjs",
-      "sha256": "cb2d21040eaa798b2d3467fd108c991b321163f20f651d7181537bfe817aff38"
+      "sha256": "c57e22e11fdbbb8757ae5682dca3baf369552b4cd213cafb7bb9c880d5f8e3bc"
     },
     {
       "path": "server-policies.mjs",
@@ -772,7 +772,7 @@
     },
     {
       "path": "server.mjs",
-      "sha256": "ea2a13b7e9cabe69a42e02175c0321254477d3b6e8856f17ed2239b0402c2eea"
+      "sha256": "204e4bc23d6054074f75b0c4bbe1fdb607554989b00c69bd6ef0fe7411ef97c6"
     },
     {
       "path": "state-load-worker.mjs",
@@ -784,7 +784,7 @@
     },
     {
       "path": "terminal-registry.mjs",
-      "sha256": "9a1ac994c10d35e5ec56c3ecff6b657aa423746c033bcf2a39cfe45bfc389779"
+      "sha256": "a7a78cb6c8e87b07f6de40628bcc36a73a802889b0a649cfcd9130eb789ad207"
     }
   ]
 }

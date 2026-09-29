@@ -6,6 +6,20 @@ import path from "node:path";
 const root = path.resolve(import.meta.dirname, "..");
 const runtimeRoots = ["browser", "build", "public", "routes", "scripts"];
 const SDK_ENTRY = "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs";
+// SDK 平台二进制包与 desktop.cjs 保持一致，避免写死 win32-x64：mac/linux CI 上也要能
+// 生成各自平台的清单（否则生成器会在读 win32 的 claude.exe 时报 ENOENT）。
+const SDK_PLATFORM_PACKAGES = {
+  "win32-x64": "claude-agent-sdk-win32-x64",
+  "win32-arm64": "claude-agent-sdk-win32-arm64",
+  "darwin-x64": "claude-agent-sdk-darwin-x64",
+  "darwin-arm64": "claude-agent-sdk-darwin-arm64",
+  "linux-x64": "claude-agent-sdk-linux-x64",
+  "linux-arm64": "claude-agent-sdk-linux-arm64",
+};
+const SDK_PLATFORM_PACKAGE =
+  SDK_PLATFORM_PACKAGES[`${process.platform}-${process.arch}`] ||
+  "claude-agent-sdk-win32-x64";
+const SDK_CLAUDE_BIN = process.platform === "win32" ? "claude.exe" : "claude";
 const rootFiles = [
   "desktop.cjs",
   "credential-protector.mjs",
@@ -23,7 +37,7 @@ const rootFiles = [
 const criticalDependencies = [
   "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
   SDK_ENTRY,
-  "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
+  `node_modules/@anthropic-ai/${SDK_PLATFORM_PACKAGE}/${SDK_CLAUDE_BIN}`,
   // CCDPH-FIX(P2-13): 这两个库由 server.mjs 的静态资源表映射为 /vendor/marked.js 与
   // /vendor/purify.js **直接发给渲染层**，是"模型输出 → DOM"之间的解析器与净化器。
   // 此前它们不在清单内，被替换（例如把 DOMPurify 换成直通实现）不会被完整性校验发现。
