@@ -7,7 +7,7 @@
     "name": "ZIO123-DOT",
     "email": "zio123@users.noreply.github.com"
   },
-  "homepage": "https://github.com/ZIO123-DOT/ccdph",
+  "homepage": "https://github.com/ZIO123-DOT/CCDPH---agent-",
   "type": "module",
   "main": "desktop.cjs",
   "scripts": {

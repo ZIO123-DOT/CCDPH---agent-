@@ -688,7 +688,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "2412cf0183da1b92ee1a9d9256b1f4f1df28686d5d8a4a7023c302bf45d925b9"
+      "sha256": "31bec9573cf12075806caee64f971c30f0c7d4c2abb86e9188c34c43716fedf8"
     },
     {
       "path": "preload-approval.cjs",
