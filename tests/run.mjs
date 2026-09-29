@@ -1,4 +1,5 @@
 import "./syntax-check.mjs";
+await import("./macos-release-config.mjs");
 await import("./api-client-auth.mjs");
 await import("./update-install-success.mjs");
 await import("./worktree-create-safety.mjs");
@@ -195,6 +196,13 @@ const integrityManifest = await runFile(
 );
 process.stdout.write(integrityManifest.stdout);
 process.stderr.write(integrityManifest.stderr);
+const packagedRuntimeIntegrity = await runFile(
+  process.execPath,
+  [fileURLToPath(new URL("./packaged-runtime-integrity.mjs", import.meta.url))],
+  { encoding: "utf8", windowsHide: true, maxBuffer: 2 * 1024 * 1024 },
+);
+process.stdout.write(packagedRuntimeIntegrity.stdout);
+process.stderr.write(packagedRuntimeIntegrity.stderr);
 const a11yDom = await runFile(
   process.execPath,
   [fileURLToPath(new URL("./a11y-dom.mjs", import.meta.url))],

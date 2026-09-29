@@ -1,8 +1,8 @@
-# CCDPH macOS 移植评估
+# CCDPH macOS 移植状态
 
-> 状态：评估稿（2026-09-28）。CCDPH 当前为 Windows 专属应用，本文列出全部 Windows 依赖、
-> 对应的 macOS 替代方案与工作量拆分。**移植无法在本 Windows 主机上验证**，最终需在 Mac 上
-> 构建 + 签名 + 公证，或用 GitHub Actions macOS runner 出未签名包后手工签名。
+> 状态：Apple Silicon 真机打包验证中（2026-09-29）。主要 macOS 分支和 arm64 DMG 已完成；
+> 正式 GitHub 分发强制 Developer ID 签名、Apple 公证与 Gatekeeper 检查。证书和公证凭据配置见
+> [`macos-release.md`](macos-release.md)。
 
 ## 结论速览
 
@@ -15,7 +15,7 @@
 | 自动更新 | `powershell.exe` 解压 + `.bat` 自替换 + taskkill | `ditto`/`unzip` + shell 自替换 + `kill` | 中 |
 | 桌面主进程 | `powershell.exe` + `claude-agent-sdk-win32-x64` | `claude-agent-sdk-darwin-{arm64,x64}` | 中 |
 | 路径处理 | `path.win32`/盘符 | `path`（已跨平台，逐个核对） | 低 |
-| 打包/分发 | 便携版，无打包配置 | electron-packager（darwin）+ 签名/公证 | 中 |
+| 打包/分发 | electron-builder 多平台构建 | arm64 DMG + Developer ID 签名/公证 | 已配置，待正式凭据发版 |
 
 ## 逐项明细
 
@@ -55,13 +55,13 @@
 - 用 `path` 模块处基本跨平台；需逐处核对 `path.win32`、盘符假设、`C:\` 字符串比较（`server.mjs` 的 `.cmd` 白名单里 `/^[a-zA-Z]:\\/` 等）。多为「加 darwin 分支」的机械改动。
 
 ### 8. 打包/分发
-- 当前无 electron-builder/packager 配置（便携版）。mac 需新增：electron-packager（darwin/arm64+x64）→ 签名（Apple Developer ID）→ 公证（`notarytool`）。未签名包在 Apple Silicon 上**无法启动**（需至少 ad-hoc `codesign -s -`）。
+- 已使用 electron-builder 生成 arm64 DMG。本地无证书构建只做 ad-hoc 签名用于开发测试；正式 CI 要求 Developer ID Application 证书，并由 `@electron/notarize` 调用 Apple 公证服务。构建后必须通过 `codesign`、`stapler`、`spctl` 与 `hdiutil` 检查，否则不发布。
 
 ## 建议拆分（按风险从低到高）
 
 - **P0（机械分支）—— ✅ 已完成**：`findClaude`/`claudeVersionOf` darwin 分支；浏览器路径；`resolveNativeClaudeExecutable`（mac 上是 no-op，已确认）。
 - **P1（需 mac 验证）—— ✅ 已完成（待 Mac 验证）**：凭据 `safeStorage`（Keychain）；终端恢复 `ps`+`kill`；浏览器进程树 kill + detached；自动更新 `ditto`/`sh`；桌面主进程 SDK darwin 映射。
-- **P2（只能在 mac 上收尾）**：真实浏览器启动/进程树验证；终端 `ps` 解析验证；ditto/.app 替换验证；打包 + 签名 + 公证。
+- **P2（仍需在 mac 上收尾）**：真实浏览器启动/进程树验证；终端 `ps` 解析验证；ditto/.app 替换验证；用正式 Developer ID 凭据跑通首个签名与公证 Release。
 
 ## 前置未知项（已确认）
 - `@anthropic-ai/claude-agent-sdk` 已发布 `darwin-x64`/`darwin-arm64` 原生二进制（见 `package.json` optionalDependencies，v0.3.268），无需走 npm 全局 `claude`。

@@ -36,15 +36,11 @@
     },
     {
       "path": "desktop.cjs",
-      "sha256": "02654208fed0ac9469b67549be787a67514c70487584a1bc964395831df0f0bb"
-    },
-    {
-      "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
-      "sha256": "1e472bcfd49449e73ef76698c87f6583055aeb88dc41ca190a9c12c6791b5eea"
+      "sha256": "a090fc0f75dd25a63afbedfd872278d2ff92687c04af59497fda8c9537130e01"
     },
     {
       "path": "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
-      "sha256": "735a0d9e498036cd006e1c63e05ce790dfbb3f32cd6e305a36a0b1375019c73a"
+      "sha256": "6b55f7963f33395c00b13cc6409449c94a254da979badf4227863e8c248212c9"
     },
     {
       "path": "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
@@ -200,7 +196,7 @@
     },
     {
       "path": "node_modules/@playwright/mcp/package.json",
-      "sha256": "4419e25dd95397dc7fb79771716f327bd9c186b0dc8013903ef197fb89d4c55d"
+      "sha256": "c5bf1f9a3a70e782763c1f05d4d362dd6f19da3808608d8891b8ecd801341a32"
     },
     {
       "path": "node_modules/ajv-formats/dist/formats.js",
@@ -683,12 +679,8 @@
       "sha256": "1deb265617d0e87b6d05bf8b3d5bf73cd4b788665c249c609a01b94ceff2eea1"
     },
     {
-      "path": "package-lock.json",
-      "sha256": "0cbb2f719ff75cc399b2d4f1566597eb45afa4e45a18b232ca4b4ffb54008af8"
-    },
-    {
       "path": "package.json",
-      "sha256": "f61385df1aeaf7ec5284b33ef16322ff8b708924393c1a6c4726323e4475ef6a"
+      "sha256": "7e344bbe7dfe32779bf0a35f3ef6e8de0ef8a330cf8287c27b39dc1ec3c5d531"
     },
     {
       "path": "preload-approval.cjs",
@@ -764,11 +756,11 @@
     },
     {
       "path": "scripts/after-pack.cjs",
-      "sha256": "002a61612367c528bf4a2523dcaf9a6653d66e6fc327814f6e5192fdbdebdfea"
+      "sha256": "8e88386786a7699b42fe3c8e2587a13e20363a732cf2aba2a30ec362e4dc0d31"
     },
     {
       "path": "scripts/generate-runtime-integrity.mjs",
-      "sha256": "e5b4b99ff57837533fa9fee408ffc6abf6ed201934ab13d45c7176fda4f7f14d"
+      "sha256": "5e5c447ed1d91e9c71667eab82088aabfb51b8c6b1664e11554351386b0f11c3"
     },
     {
       "path": "server-policies.mjs",

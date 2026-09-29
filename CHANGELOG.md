@@ -2,6 +2,15 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Fixed
+
+- **macOS GitHub 下载包被 Gatekeeper 拒绝**：发布流程改为强制 Developer ID Application 签名、hardened runtime 与 Apple 公证；构建后必须通过 `codesign`、`stapler`、`spctl` 和 DMG 校验，缺少发布凭据时拒绝产出 Release。
+- **启动后破坏 `.app` 签名**：macOS/Linux 不再把 `.data` 与 `.desktop-data` 写进可执行文件目录；改用 Electron 标准用户数据目录。Windows 便携版仍保持 exe 旁存储。
+- **打包即触发完整性误报**：完整性清单按 electron-builder 对 package.json 的确定性清理规则计算哈希，并新增 app.asar 打包后逐文件核验，避免安装包首次启动就被自身门禁阻止。
+- **下载入口误导**：README 明确区分 macOS DMG 与 GitHub 自动生成的 Source code ZIP，避免把源码压缩包误当安装包。
+
 ## [0.4.2] - 2026-09-29
 
 > 修复 macOS 启动仍被完整性校验误判「运行时文件已损坏」。

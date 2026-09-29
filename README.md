@@ -4,15 +4,21 @@
 
 给本机 Claude Code 使用的中文图形工作台。左侧项目和会话，中间聊天，右侧文件、Git 修改和终端；支持跟随系统、浅色、深色主题。
 
+## 下载与安装
+
+请从 [Releases](https://github.com/ZIO123-DOT/CCDPH---agent-/releases/latest) 下载与你的系统匹配的安装包。GitHub 自动生成的 **Source code (zip)** 只是源码，解压后不能当作 macOS 应用安装。
+
+- Apple Silicon Mac（M1/M2/M3/M4）：下载 `ccdph-*-macos-arm64.dmg`，打开后把 `CCDPH.app` 拖入 `Applications`。Intel Mac 暂不支持。
+- Windows x64：下载 `ccdph-*-windows-setup.exe`；不想安装可下载 portable 版。
+- Linux x64：下载 AppImage 或 deb。
+
+从下一次正确配置发布凭据的版本开始，macOS 包会使用 Developer ID 签名并通过 Apple 公证；CI 会在签名、公证或 Gatekeeper 检查失败时拒绝发布。`v0.4.2` 仅为 ad-hoc 签名，仍可能显示“无法验证开发者”，它不是已公证的正式 macOS 分发包。
+
 ## 打开
 
 双击桌面的 **CCDPH** 快捷方式，或直接运行 `D:\CCDPH\CCDPH.exe`。这是标准 Electron 便携窗口，无需 PowerShell、VBS 或终端启动器。整个 `D:\CCDPH` 文件夹需要保留在一起。
 
-当前发布目标仅支持 Windows x64。源码可在其他平台启动部分网页功能，但终端异常退出恢复依赖
-Windows Toolhelp32 与 `taskkill`；非 Windows 平台会明确记录降级提示，不承诺残留进程自动清理。
-
-> **macOS 移植进行中**：CCDPH 深度绑定 Windows（DPAPI / Edge / taskkill / PowerShell / win32 SDK）。
-> 移植评估与拆分见 [`docs/mac-port.md`](docs/mac-port.md)，当前已完成 Claude 可执行文件解析与浏览器探测的 macOS 分支，凭据加密、终端恢复、自动更新等仍在推进。
+macOS 版可从 `Applications` 打开，当前只提供 arm64 构建。平台移植状态与尚待验证的功能见 [`docs/mac-port.md`](docs/mac-port.md)。
 
 1. 点击左侧「＋」添加项目，选择文件夹或粘贴完整路径。
 2. 在底部输入任务并发送。Enter 发送，Shift + Enter 换行；可选择模型、权限模式和新任务环境。
@@ -38,7 +44,7 @@ Windows Toolhelp32 与 `taskkill`；非 Windows 平台会明确记录降级提�
 - 单轮任务默认最长运行 2 小时；如需调整，可设置环境变量
   `WORKBENCH_RUN_HARD_DEADLINE_MS`（毫秒，最小 1000）。到达上限会强制结束卡住的任务，
   防止会话和连接永久占用。
-- 桌面版会话保存在 exe 旁的 `.data/`，窗口设置在 `.desktop-data/`；开发版位于源代码目录。实际模型请求仍由 Claude Code 发往你配置的服务。
+- Windows 便携版会话保存在 exe 旁的 `.data/`，窗口设置在 `.desktop-data/`；macOS/Linux 使用 Electron 的系统用户数据目录，避免改写已签名应用包。开发版数据位于源代码目录。实际模型请求仍由 Claude Code 发往你配置的服务。
 - 只监听 `127.0.0.1:4318`。启动令牌仅用于首次换取 `HttpOnly + SameSite=Strict` 会话 Cookie，换取成功后渲染层会立即清空内存中的令牌；所有接口仍校验 Host、Origin、会话 Cookie 和分桶限流。不要公开转发该端口。
 - 这是便携 Electron 桌面程序，没有系统安装器或自动更新器。渲染页面禁用 Node 集成，启用上下文隔离和 Chromium 沙箱。
 - 文件面板是只读预览。修改由 Claude Code 工具执行；Git 面板显示整个项目现有修改，不能将所有修改归因于当前会话。
@@ -100,7 +106,7 @@ npm install --cache .npm-cache --registry https://registry.npmjs.org --omit=opti
 - `npm run check`：即 `node tests/syntax-check.mjs`，对全部源码文件逐个做 `node --check` 语法检查。清单 = 显式列出的应用文件（`server.mjs`、`desktop.cjs`、`preload.cjs`、`routes/*.mjs`、`public/*.js`、`scripts/*.mjs`）+ **自动扫描**的 `tests/*.mjs` 与 `browser/*.mjs`。
 - `npm run integrity`：重新生成 `runtime-integrity.json`。只应在代码冻结后运行，并在同步到运行版后复算全部条目。清单内容 = 应用文件 + 关键第三方依赖 + **扫描 `sdk.mjs` 运行期 `require()` 得到的所有依赖文件**（如 `ajv`/`ajv-formats` 的运行时模块）。
 
-仓库没有桌面打包脚本：桌面入口是 `desktop.cjs`（需自行以 Electron 运行），当前桌面运行版位于 `D:\CCDPH`，应用代码为 `D:\CCDPH\resources\app`。便携 exe 由仓库外的打包器生成，不存在 `npm run desktop` 或 `npm run build:desktop` 命令。依赖版本由 `package-lock.json` 锁定。
+桌面入口是 `desktop.cjs`，安装包由 electron-builder 生成：`npm run build:win`、`npm run build:mac`、`npm run build:linux` 分别构建三端产物，`npm run build` 构建当前平台。依赖版本由 `package-lock.json` 锁定；正式 macOS Release 还需要 [`docs/macos-release.md`](docs/macos-release.md) 中列出的 Developer ID 与公证凭据。
 
 > **随附的运行时**：当前运行版内含 **Electron 44.3.0**（见 `D:\CCDPH\version`）。Electron 不在 `package.json` 的 `dependencies` 里，**`npm audit` 不会覆盖它及其内置 Chromium / Node / V8 的 CVE**；每次发版应记录所用 Electron 版本，并单独跟进其安全公告。门禁的 G6 规则每次都会把这条覆盖盲区打印出来（`覆盖盲区：Electron/Chromium 运行时不在 npm 依赖树内，CVE 扫描不覆盖`）。
 >

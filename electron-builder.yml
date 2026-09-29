@@ -8,8 +8,8 @@ directories:
   # 运行时图标仍在 build/ 下（icon.ico / tray.png 等）。
   buildResources: build-resources
 
-# macOS 打包后做 ad-hoc 签名（见 scripts/after-pack.cjs），否则未签名应用在
-# Apple Silicon 上会被 Gatekeeper 判「已损坏」。
+# 无 Developer ID 的本地构建由 afterPack 做 ad-hoc 签名，便于开发机自测；正式 CI
+# 构建必须使用 Developer ID Application 签名，并由 electron-builder 完成 Apple 公证。
 afterPack: scripts/after-pack.cjs
 
 # AppImage 用静态运行时工具链（1.0.3），在 Ubuntu 22.04+/24.04 上无需 libfuse2
@@ -65,6 +65,11 @@ portable:
 mac:
   icon: build-resources/icon.png
   category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: true
+  entitlements: build-resources/entitlements.mac.plist
+  entitlementsInherit: build-resources/entitlements.mac.inherit.plist
   target:
     - target: dmg
       arch: [arm64]

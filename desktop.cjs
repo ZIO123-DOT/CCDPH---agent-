@@ -102,10 +102,12 @@ function trustedSender(event) {
   for (const win of approvalWindows.values()) if (win === senderWindow) return true;
   return false;
 }
-// Keep the portable app's user data next to the executable, inside the app folder.
+// Windows 便携版继续把数据放在 exe 旁；macOS/Linux 的应用包本身属于签名/只读内容，
+// 运行时数据必须写到系统标准 userData 目录，绝不能改写 .app/AppImage 内部。
 const portableRoot = app.isPackaged
   ? path.dirname(process.execPath)
   : __dirname;
+const standardUserDataRoot = app.getPath("userData");
 async function verifyPackagedRuntime() {
   if (!app.isPackaged) return true;
   const manifestFile = path.join(__dirname, "runtime-integrity.json");
@@ -211,16 +213,22 @@ function verifyClaudeExecutableSignature() {
 // tests/packaged-signature-fallback.mjs 只想做一次「签名校验失败仍能启动」的冒烟，
 // 也必然改写部署版**真实**的 .data（runtime.json / startup-warnings.log）与 .desktop-data，
 // 与「离线套件全程使用临时数据目录」的承诺、以及「绝不触碰 D:\CCDPH\.data」的约定都冲突。
-// 现在：调用方显式设置的 WORKBENCH_DATA_DIR 优先（便携目录仍是默认值，产品行为不变）。
+// 现在：调用方显式设置的 WORKBENCH_DATA_DIR 优先；未覆盖时只有 Windows 保持便携目录，
+// macOS/Linux 使用 Electron 标准 userData，避免启动后破坏应用签名或写入只读挂载点。
 const dataDirOverride = String(process.env.WORKBENCH_DATA_DIR || "").trim();
+const usePortableStorage = app.isPackaged && process.platform === "win32";
 const dataRoot = dataDirOverride
   ? path.resolve(dataDirOverride)
-  : path.join(portableRoot, ".data");
+  : usePortableStorage
+    ? path.join(portableRoot, ".data")
+    : path.join(standardUserDataRoot, ".data");
 app.setPath(
   "userData",
   dataDirOverride
     ? path.join(dataRoot, ".desktop-data")
-    : path.join(portableRoot, ".desktop-data"),
+    : usePortableStorage
+      ? path.join(portableRoot, ".desktop-data")
+      : standardUserDataRoot,
 );
 process.env.WORKBENCH_DATA_DIR = dataRoot;
 // 让本地服务知道自己在桌面版里运行（自动更新等能力依赖此标记）

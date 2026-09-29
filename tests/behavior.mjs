@@ -264,10 +264,17 @@ assert.equal(classifyRouteDomain("/api/terminal/start"), "workspaceIo");
 assert.equal(classifyRouteDomain("/api/browser/status"), "integration");
 assert.equal(classifyRouteDomain("/style.css"), "static");
 
-assert.equal(isDirectChildPath("C:\\safe\\worktrees", "C:\\safe\\worktrees\\one"), true);
-assert.equal(isDirectChildPath("C:\\safe\\worktrees", "C:\\safe\\worktrees"), false);
-assert.equal(isDirectChildPath("C:\\safe\\worktrees", "C:\\safe\\worktrees\\one\\nested"), false);
-assert.equal(isDirectChildPath("C:\\safe\\worktrees", "C:\\safe\\outside"), false);
+const directChildBase = path.join(path.parse(process.cwd()).root, "safe", "worktrees");
+assert.equal(isDirectChildPath(directChildBase, path.join(directChildBase, "one")), true);
+assert.equal(isDirectChildPath(directChildBase, directChildBase), false);
+assert.equal(
+  isDirectChildPath(directChildBase, path.join(directChildBase, "one", "nested")),
+  false,
+);
+assert.equal(
+  isDirectChildPath(directChildBase, path.join(path.dirname(directChildBase), "outside")),
+  false,
+);
 
 assert.deepEqual(browserRestrictions("auto", true).disallowedTools, [
   "mcp__browser__browser_evaluate",

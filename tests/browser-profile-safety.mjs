@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -13,7 +13,7 @@ try {
     `../browser/service.mjs?profile-safety=${Date.now()}`
   );
   const safe = path.join(dataDir, "safe-profile");
-  assert.equal(resolveDedicatedProfileDir(safe), path.resolve(safe));
+  assert.equal(resolveDedicatedProfileDir(safe), await realpath(safe));
 
   await rm(path.join(safe, ".ccdph-browser-profile"), { force: true });
   await rm(safe, { recursive: true, force: true });

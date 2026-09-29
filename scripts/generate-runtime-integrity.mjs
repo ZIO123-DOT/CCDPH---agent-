@@ -24,7 +24,6 @@ const rootFiles = [
   "desktop.cjs",
   "credential-protector.mjs",
   "package.json",
-  "package-lock.json",
   "preload.cjs",
   "preload-approval.cjs",
   "route-registry.mjs",
@@ -120,6 +119,55 @@ const RUNTIME_DEPS = [
   "node_modules/@playwright",
 ];
 const CODE_EXTS = new Set([".js", ".cjs", ".mjs", ".json", ".wasm"]);
+
+// electron-builder 会在打包时清理主 package.json 与 node_modules/**/package.json。
+// 完整性清单在打包前生成，如果直接哈希 npm 安装后的原文件，打包态第一次启动就会把
+// electron-builder 的确定性改写误报成“运行时文件损坏”。这里与 electron-builder 26 的
+// cleanupPackageJson 规则保持一致，清单记录最终包内字节的哈希。
+const PACKAGED_IGNORED_PACKAGE_PROPERTIES = new Set([
+  "dist",
+  "gitHead",
+  "build",
+  "jspm",
+  "ava",
+  "xo",
+  "nyc",
+  "eslintConfig",
+  "contributors",
+  "bundleDependencies",
+  "tags",
+]);
+function packagedContent(relative, content) {
+  const normalized = relative.replaceAll("\\", "/");
+  const isMain = normalized === "package.json";
+  const isDependencyPackage =
+    normalized.startsWith("node_modules/") && normalized.endsWith("/package.json");
+  if (!isMain && !isDependencyPackage) return content;
+
+  const data = JSON.parse(content.toString("utf8"));
+  const deps = data.dependencies;
+  const removeBabel =
+    !deps ||
+    typeof deps !== "object" ||
+    !Object.getOwnPropertyNames(deps).some((name) => name.startsWith("babel"));
+  let changed = false;
+  for (const property of Object.getOwnPropertyNames(data)) {
+    if (
+      property.startsWith("_") ||
+      PACKAGED_IGNORED_PACKAGE_PROPERTIES.has(property) ||
+      property === "scripts" ||
+      property === "keywords" ||
+      (isMain && property === "devDependencies") ||
+      (!isMain && property === "bugs") ||
+      (removeBabel && property === "babel")
+    ) {
+      delete data[property];
+      changed = true;
+    }
+  }
+  return changed ? Buffer.from(JSON.stringify(data, null, 2), "utf8") : content;
+}
+
 async function runtimeDependencyCodeFiles() {
   const out = [];
   for (const dep of RUNTIME_DEPS) {
@@ -174,7 +222,10 @@ const paths = [
 ].sort();
 const files = [];
 for (const relative of paths) {
-  const content = await readFile(path.join(root, relative));
+  const content = packagedContent(
+    relative,
+    await readFile(path.join(root, relative)),
+  );
   files.push({
     path: relative,
     sha256: createHash("sha256").update(content).digest("hex"),

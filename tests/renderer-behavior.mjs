@@ -236,8 +236,14 @@ try {
   );
   stateRaceMode = false;
 
+  const streamsBeforeTerminal = await page.evaluate(() => window.__eventSources.length);
   await page.click("#open-terminal");
-  await page.waitForFunction(() => window.__eventSources.length >= 2);
+  await page.waitForFunction(
+    (before) =>
+      window.__eventSources.length > before &&
+      window.__eventSources.some((source) => source.url.includes("/api/terminal/events")),
+    streamsBeforeTerminal,
+  );
   await page.evaluate(() => {
     window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
     window.dispatchEvent(new Event("beforeunload"));

@@ -1,9 +1,8 @@
 name: build
 
 # 三平台安装包构建 + 发布到 GitHub Release。
-# 说明：安装包均未签名（无证书）——
-#   Windows 首次运行有 SmartScreen 提示；macOS 需右键 → 打开绕过 Gatekeeper；
-#   Linux 无签名校验。个人项目可接受，如需正式分发请配置代码签名。
+# macOS 发布必须使用 Developer ID Application 签名并通过 Apple 公证；缺少凭据或
+# Gatekeeper 验证失败时整个发布失败，避免再次上传“下载后无法打开”的 dmg。
 on:
   workflow_dispatch:
   push:
@@ -33,18 +32,28 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        run: npm install
-
-      # macOS：在生成完整性清单之前先对 SDK 原生二进制做 ad-hoc 签名。
-      # 之后 afterPack 会再对 .app --deep 签名（ad-hoc 幂等，哈希不变），
-      # 这样清单里记录的就是签名后 claude 的哈希，启动校验才能通过。
-      - name: Ad-hoc sign SDK binary (macOS only)
+      - name: Require macOS signing and notarization credentials
         if: runner.os == 'macOS'
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          for b in node_modules/@anthropic-ai/claude-agent-sdk-darwin-*/claude; do
-            [ -f "$b" ] && codesign --force --sign - "$b"
+          set -euo pipefail
+          missing=()
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name:-}" ] || missing+=("$name")
           done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "Missing required macOS release credentials: ${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
 
       # 完整性清单（runtime-integrity.json）按平台生成：SDK 原生二进制路径
       #（claude.exe / claude / darwin / linux）随平台不同，必须在本平台重新生成，
@@ -52,12 +61,40 @@ jobs:
       - name: Regenerate integrity manifest
         run: npm run integrity
 
-      - name: Build installers
+      - name: Build installers (Windows/Linux)
+        if: runner.os != 'macOS'
         run: npm run ${{ matrix.script }}
         env:
-          # 不自动寻找签名身份，产出未签名/自动 ad-hoc 签名的包
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           DEBUG: electron-builder
+
+      - name: Build signed and notarized macOS installer
+        if: runner.os == 'macOS'
+        run: npm run ${{ matrix.script }}
+        env:
+          CSC_LINK: ${{ secrets.MACOS_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          DEBUG: electron-builder
+
+      - name: Verify signed and notarized macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="release/mac-arm64/CCDPH.app"
+          dmg_path="$(find release -maxdepth 1 -name 'ccdph-*-macos-arm64.dmg' -print -quit)"
+          test -d "$app_path"
+          test -f "$dmg_path"
+          codesign --verify --deep --strict --verbose=4 "$app_path"
+          codesign -dvvv "$app_path" 2>&1 | grep -q 'Authority=Developer ID Application'
+          CCDPH_PACKAGED_APP="$app_path" node tests/packaged-runtime-integrity.mjs
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=4 "$app_path"
+          hdiutil verify "$dmg_path"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

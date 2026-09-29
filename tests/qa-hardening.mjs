@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
 import {
   appendBoundedText,
   boundedText,
@@ -278,7 +278,7 @@ await test("P-02", "P0", "safePath() 合法子路径解析成功", async () => {
   await mkdir(path.join(dir, "sub"));
   await writeFile(path.join(dir, "sub", "a.txt"), "ok");
   const target = await safePath(dir, "sub/a.txt");
-  assert.equal(target, path.join(dir, "sub", "a.txt"));
+  assert.equal(target, await realpath(path.join(dir, "sub", "a.txt")));
   await rm(dir, { recursive: true, force: true });
 });
 await test("P-03", "P0", "safePath() 越界 ../ 拒绝", async () => {
@@ -295,7 +295,15 @@ await test("P-03", "P0", "safePath() 越界 ../ 拒绝", async () => {
 await test("P-04", "P0", "safePath() NTFS ADS/冒号拒绝", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "ccdph-safepath-"));
   await writeFile(path.join(dir, "normal.txt"), "data");
-  await assert.rejects(safePath(dir, "normal.txt:secret"), /非法字符 ':'/);
+  if (process.platform === "win32") {
+    await assert.rejects(safePath(dir, "normal.txt:secret"), /非法字符 ':'/);
+  } else {
+    await writeFile(path.join(dir, "normal.txt:secret"), "posix-name");
+    assert.equal(
+      await safePath(dir, "normal.txt:secret"),
+      await realpath(path.join(dir, "normal.txt:secret")),
+    );
+  }
   await rm(dir, { recursive: true, force: true });
 });
 await test("P-05", "P1", "isDirectChildPath 边界（自身/深层/junction 语义）", () => {
