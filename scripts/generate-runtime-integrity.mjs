@@ -117,6 +117,10 @@ async function runtimeDependencyCodeFiles() {
         const childAbs = path.join(abs, entry.name);
         const childRel = path.posix.join(rel.replaceAll("\\", "/"), entry.name);
         if (entry.isDirectory()) {
+          // npm 在 Unix（macOS/Linux）上把 CLI 入口做成 node_modules/<pkg>/.bin/ 下的
+          // 符号链接（指向同仓库内的可执行文件）。这些 .bin 只是启动垫片，不属于运行时代码面，
+          // 跳过即可；其余目录里的符号链接仍要拒绝（防御静默漏项）。
+          if (entry.name === ".bin") continue;
           await collect(childAbs, childRel);
           continue;
         }
