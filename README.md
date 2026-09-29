@@ -44,7 +44,7 @@ macOS 版可从 `Applications` 打开，当前只提供 arm64 构建。平台移
 - 单轮任务默认最长运行 2 小时；如需调整，可设置环境变量
   `WORKBENCH_RUN_HARD_DEADLINE_MS`（毫秒，最小 1000）。到达上限会强制结束卡住的任务，
   防止会话和连接永久占用。
-- Windows 便携版会话保存在 exe 旁的 `.data/`，窗口设置在 `.desktop-data/`；macOS/Linux 使用 Electron 的系统用户数据目录，避免改写已签名应用包。开发版数据位于源代码目录。实际模型请求仍由 Claude Code 发往你配置的服务。
+- Windows 便携版会话保存在 exe 旁的 `.data/`，窗口设置在 `.desktop-data/`；macOS/Linux 使用 Electron 的系统用户数据目录，避免改写已签名应用包。开发版数据同样位于 Electron 标准用户数据目录（`app.getPath("userData")` 下的 `.data`），不再写入源代码目录。实际模型请求仍由 Claude Code 发往你配置的服务。
 - 只监听 `127.0.0.1:4318`。启动令牌仅用于首次换取 `HttpOnly + SameSite=Strict` 会话 Cookie，换取成功后渲染层会立即清空内存中的令牌；所有接口仍校验 Host、Origin、会话 Cookie 和分桶限流。不要公开转发该端口。
 - 这是便携 Electron 桌面程序，没有系统安装器或自动更新器。渲染页面禁用 Node 集成，启用上下文隔离和 Chromium 沙箱。
 - 文件面板是只读预览。修改由 Claude Code 工具执行；Git 面板显示整个项目现有修改，不能将所有修改归因于当前会话。

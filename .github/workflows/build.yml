@@ -96,6 +96,19 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app_path"
           hdiutil verify "$dmg_path"
 
+      # macOS 上面已用 CCDPH.app 校验打包后 app.asar；这里补上 Windows/Linux 的
+      # 打包后完整性门禁，避免「package.json 清理模拟」与 electron-builder 实际行为
+      # 不一致时只在用户第一次启动才暴露。win/linux 的未打包目录是 *-unpacked/resources。
+      - name: Verify packaged runtime integrity (Windows/Linux)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$(find release -maxdepth 2 -type d -name resources -path '*unpacked*' | head -1)"
+          test -n "$target"
+          test -f "$target/app.asar"
+          CCDPH_PACKAGED_APP="$target" node tests/packaged-runtime-integrity.mjs
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
