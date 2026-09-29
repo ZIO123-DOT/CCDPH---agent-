@@ -15,10 +15,10 @@
     "test": "node tests/run.mjs",
     "check": "node tests/syntax-check.mjs",
     "integrity": "node scripts/generate-runtime-integrity.mjs",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win",
-    "build:mac": "electron-builder --mac",
-    "build:linux": "electron-builder --linux"
+    "build": "electron-builder --publish never",
+    "build:win": "electron-builder --win --publish never",
+    "build:mac": "electron-builder --mac --publish never",
+    "build:linux": "electron-builder --linux --publish never"
   },
   "engines": {
     "node": ">=20"

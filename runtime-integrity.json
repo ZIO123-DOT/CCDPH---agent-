@@ -688,7 +688,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "57af22972d6c61d4ab1a2ec102d5d9da63344eacb26b304f291b642fc920f39a"
+      "sha256": "2412cf0183da1b92ee1a9d9256b1f4f1df28686d5d8a4a7023c302bf45d925b9"
     },
     {
       "path": "preload-approval.cjs",
@@ -764,7 +764,7 @@
     },
     {
       "path": "scripts/generate-runtime-integrity.mjs",
-      "sha256": "c57e22e11fdbbb8757ae5682dca3baf369552b4cd213cafb7bb9c880d5f8e3bc"
+      "sha256": "0bc5783621581152afa3af7f4f3e257b587c6803eb806aaae517d1c8c5fbd3c5"
     },
     {
       "path": "server-policies.mjs",
