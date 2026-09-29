@@ -37,13 +37,25 @@ const rootFiles = [
 const criticalDependencies = [
   "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
   SDK_ENTRY,
-  `node_modules/@anthropic-ai/${SDK_PLATFORM_PACKAGE}/${SDK_CLAUDE_BIN}`,
   // CCDPH-FIX(P2-13): 这两个库由 server.mjs 的静态资源表映射为 /vendor/marked.js 与
   // /vendor/purify.js **直接发给渲染层**，是"模型输出 → DOM"之间的解析器与净化器。
   // 此前它们不在清单内，被替换（例如把 DOMPurify 换成直通实现）不会被完整性校验发现。
   "node_modules/marked/lib/marked.esm.js",
   "node_modules/dompurify/dist/purify.es.mjs",
 ];
+// CCDPH-FIX(mac-sign): macOS 打包时 afterPack 用 `codesign --deep --force --sign -` 对 .app
+// 整体重签，会把 app.asar.unpacked 里的 SDK 原生二进制（claude）再签一次。即便 ad-hoc 签名
+// 理论上幂等，重签也可能改变字节，导致「先生成清单 → 再打包重签」的顺序下哈希必对不上、
+// 启动完整性校验误报「运行时文件已损坏」。macOS 上 claude 二进制的完整性改由 OS 级
+// Gatekeeper（bundle 签名 seal 覆盖 Resources 内所有文件）+ 隔离属性兜底，故不再纳入清单；
+// Windows/Linux 打包不重签，仍保留哈希。
+if (process.platform !== "darwin") {
+  criticalDependencies.splice(
+    2,
+    0,
+    `node_modules/@anthropic-ai/${SDK_PLATFORM_PACKAGE}/${SDK_CLAUDE_BIN}`,
+  );
+}
 
 // CCDPH-FIX(R2-P2-4): sdk.mjs 会在**运行期**用 createRequire 拉取依赖
 // （require("ajv/dist/runtime/equal")、require("ajv-formats/dist/formats") 等）。清单此前

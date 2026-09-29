@@ -36,7 +36,7 @@
     },
     {
       "path": "desktop.cjs",
-      "sha256": "ff70ab2bdeafbd0ba57001f931e04ece8c9d60a56d868d8676edfa4275b1ed0a"
+      "sha256": "02654208fed0ac9469b67549be787a67514c70487584a1bc964395831df0f0bb"
     },
     {
       "path": "node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe",
@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "e897ba2a19efc6e14ac4473ea933d4c00aab3152dae802c3646960012538bdb6"
+      "sha256": "0cbb2f719ff75cc399b2d4f1566597eb45afa4e45a18b232ca4b4ffb54008af8"
     },
     {
       "path": "package.json",
-      "sha256": "90778667d91b3fd434c8e015aa33cd9341fb8636d95966bc31db69662441692b"
+      "sha256": "f61385df1aeaf7ec5284b33ef16322ff8b708924393c1a6c4726323e4475ef6a"
     },
     {
       "path": "preload-approval.cjs",
@@ -768,7 +768,7 @@
     },
     {
       "path": "scripts/generate-runtime-integrity.mjs",
-      "sha256": "0bc5783621581152afa3af7f4f3e257b587c6803eb806aaae517d1c8c5fbd3c5"
+      "sha256": "e5b4b99ff57837533fa9fee408ffc6abf6ed201934ab13d45c7176fda4f7f14d"
     },
     {
       "path": "server-policies.mjs",

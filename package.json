@@ -1,7 +1,7 @@
 {
   "name": "ccdph",
   "productName": "CCDPH",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Claude Code 桌面工作台：本地多会话终端、浏览器自动化与 MCP 集成的 Electron 应用",
   "author": {
     "name": "ZIO123-DOT",

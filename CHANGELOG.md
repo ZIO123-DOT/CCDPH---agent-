@@ -2,6 +2,14 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.4.2] - 2026-09-29
+
+> 修复 macOS 启动仍被完整性校验误判「运行时文件已损坏」。
+
+### Fixed
+
+- **macOS 启动完整性校验误报「损坏」**：afterPack 的 `codesign --deep` 会把 SDK 原生二进制（claude）再签一次、字节变化，导致「先生成清单 → 再打包重签」的顺序下哈希对不上。改为 macOS 上 claude 二进制不再纳入完整性清单（Gatekeeper bundle seal 兜底），Windows/Linux 仍保留哈希。
+
 ## [0.4.1] - 2026-09-29
 
 > 修复 macOS 安装包「已损坏」无法启动。

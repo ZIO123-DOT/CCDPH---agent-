@@ -46,8 +46,11 @@ const REQUIRED_RUNTIME_FILES = [
   "server.mjs",
   "node_modules/@anthropic-ai/claude-agent-sdk/package.json",
   "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
-  SDK_CLAUDE_RELATIVE,
 ];
+// CCDPH-FIX(mac-sign): macOS 打包时 afterPack 会对 .app 用 codesign --deep 重签，SDK 原生
+// 二进制（claude）会被再次签名、字节可能变化，导致启动完整性校验误报「运行时文件已损坏」。
+// 故 macOS 不要求 claude 二进制出现在清单里（Gatekeeper bundle seal 兜底）；Windows/Linux 仍要求。
+if (process.platform !== "darwin") REQUIRED_RUNTIME_FILES.push(SDK_CLAUDE_RELATIVE);
 let window,
   engine,
   server,
