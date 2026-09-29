@@ -2,6 +2,21 @@
 
 本项目的重要变更记录于此。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [0.4.0] - 2026-09-29
+
+> 跨平台起步 + 三端安装包发布。macOS 移植为**进行中/未真机验证**，Linux 未移植；mac/Linux 安装包为占位，核心功能仍以 Windows 为准。
+
+### Added
+
+- **三端安装包（electron-builder）**：Windows=NSIS 安装器 + 便携 exe；macOS=dmg（arm64+x64）；Linux=AppImage+deb。`.github/workflows/build.yml` 三平台矩阵构建，`v*` tag 自动发布 GitHub Release（均未签名）。
+- **macOS 移植（未真机验证）**：`findClaude` 候选路径、浏览器探测（Edge/Chrome `.app`）、凭据加密接 Electron safeStorage（Keychain）、终端恢复与进程树 kill、自动更新（ditto + sh 自替换）。
+- **Apache-2.0 许可证**。
+
+### Changed
+
+- **桌面 SDK 平台化**：`claude-agent-sdk` 原生二进制按 platform/arch 选择（win32/darwin/linux），不再写死 win32-x64。
+- **完整性清单平台化**：`scripts/generate-runtime-integrity.mjs` 按平台生成清单（CI 各平台构建前重跑 `npm run integrity`）。
+
 ## [0.3.15] - 2026-09-28
 
 > 四链独立复审后的安全加固项（P1/P2/P3）。
