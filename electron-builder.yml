@@ -8,6 +8,10 @@ directories:
   # 运行时图标仍在 build/ 下（icon.ico / tray.png 等）。
   buildResources: build-resources
 
+# macOS 打包后做 ad-hoc 签名（见 scripts/after-pack.cjs），否则未签名应用在
+# Apple Silicon 上会被 Gatekeeper 判「已损坏」。
+afterPack: scripts/after-pack.cjs
+
 # AppImage 用静态运行时工具链（1.0.3），在 Ubuntu 22.04+/24.04 上无需 libfuse2
 toolsets:
   appimage: "1.0.3"
@@ -55,13 +59,15 @@ nsis:
 portable:
   artifactName: ccdph-${version}-windows-portable.${ext}
 
-# macOS：仅 dmg（拖入 Applications 的标准安装包）
+# macOS：仅 dmg（拖入 Applications 的标准安装包）。
+# 只打 arm64：SDK 原生二进制按平台/架构门控安装（arm64 runner 上只有 darwin-arm64 的
+# claude），双架构会产出 x64 dmg 里带 arm64 二进制、启动完整性校验必失败。
 mac:
   icon: build-resources/icon.png
   category: public.app-category.developer-tools
   target:
     - target: dmg
-      arch: [arm64, x64]
+      arch: [arm64]
 
 dmg:
   artifactName: ccdph-${version}-macos-${arch}.${ext}

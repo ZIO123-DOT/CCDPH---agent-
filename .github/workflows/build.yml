@@ -36,6 +36,16 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # macOS：在生成完整性清单之前先对 SDK 原生二进制做 ad-hoc 签名。
+      # 之后 afterPack 会再对 .app --deep 签名（ad-hoc 幂等，哈希不变），
+      # 这样清单里记录的就是签名后 claude 的哈希，启动校验才能通过。
+      - name: Ad-hoc sign SDK binary (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          for b in node_modules/@anthropic-ai/claude-agent-sdk-darwin-*/claude; do
+            [ -f "$b" ] && codesign --force --sign - "$b"
+          done
+
       # 完整性清单（runtime-integrity.json）按平台生成：SDK 原生二进制路径
       #（claude.exe / claude / darwin / linux）随平台不同，必须在本平台重新生成，
       # 否则打包后启动时的完整性校验会因清单指向缺失的跨平台二进制而失败。

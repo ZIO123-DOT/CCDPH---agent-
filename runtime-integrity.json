@@ -684,11 +684,11 @@
     },
     {
       "path": "package-lock.json",
-      "sha256": "5692662bd92600f573dd8398bb1cf74a4061ccbe183f65787feaaad44b0f507f"
+      "sha256": "e897ba2a19efc6e14ac4473ea933d4c00aab3152dae802c3646960012538bdb6"
     },
     {
       "path": "package.json",
-      "sha256": "31bec9573cf12075806caee64f971c30f0c7d4c2abb86e9188c34c43716fedf8"
+      "sha256": "90778667d91b3fd434c8e015aa33cd9341fb8636d95966bc31db69662441692b"
     },
     {
       "path": "preload-approval.cjs",
@@ -761,6 +761,10 @@
     {
       "path": "routes/workspace-mutation.mjs",
       "sha256": "2d781012b5aee199c4b1e4085d31e036aafc18b020979f6184be2a4fb2e11b17"
+    },
+    {
+      "path": "scripts/after-pack.cjs",
+      "sha256": "002a61612367c528bf4a2523dcaf9a6653d66e6fc327814f6e5192fdbdebdfea"
     },
     {
       "path": "scripts/generate-runtime-integrity.mjs",
